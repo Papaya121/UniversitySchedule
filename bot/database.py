@@ -198,6 +198,12 @@ class Database:
                 "SELECT * FROM users WHERE chat_id = ?", (chat_id,)
             ).fetchone()
 
+    async def all_users(self) -> list[sqlite3.Row]:
+        async with self._lock:
+            return list(self._connection.execute(
+                "SELECT * FROM users ORDER BY created_at, chat_id"
+            ).fetchall())
+
     async def active_users(self, subgroup: int | None = None, group_name: str | None = None) -> list[sqlite3.Row]:
         query = "SELECT * FROM users WHERE active = 1"
         params: list[object] = []

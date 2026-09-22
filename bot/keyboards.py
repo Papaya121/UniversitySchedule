@@ -43,6 +43,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Обновить статистику", callback_data="admin:stats")],
         [InlineKeyboardButton(text="📣 Создать рассылку", callback_data="admin:broadcast")],
+        [InlineKeyboardButton(text="📥 Скачать пользователей", callback_data="admin:users_export")],
     ])
 
 

@@ -29,6 +29,16 @@ class DatabaseTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(user["group_name"], "ПИ-101")
         self.assertEqual(len(await self.db.active_users()), 1)
 
+    async def test_all_users_includes_inactive_profiles(self) -> None:
+        await self.db.upsert_user(42, "ИС2-261-ОБ", 1, "Иван", "ivan")
+        await self.db.upsert_user(43, "ПИ-101", 2, "Анна", None)
+        await self.db.deactivate_user(43)
+
+        users = await self.db.all_users()
+
+        self.assertEqual([user["chat_id"] for user in users], [42, 43])
+        self.assertEqual(users[1]["active"], 0)
+
     async def test_delivery_can_be_claimed_only_once_and_released(self) -> None:
         day = date(2026, 9, 4)
         self.assertTrue(await self.db.claim_delivery(42, "morning", day))

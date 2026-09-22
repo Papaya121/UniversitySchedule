@@ -1,5 +1,6 @@
 import asyncio
 import html
+from datetime import datetime
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import (
@@ -11,7 +12,7 @@ from aiogram.exceptions import (
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from bot.database import Database
 from bot.error_reporter import ErrorReporter
@@ -21,6 +22,7 @@ from bot.keyboards import (
     broadcast_audience_keyboard,
     broadcast_confirmation_keyboard,
 )
+from bot.user_export import build_users_workbook
 
 
 class AdminBroadcast(StatesGroup):
@@ -107,6 +109,26 @@ def build_admin_router(
             "📣 <b>Кому отправить сообщение?</b>",
             reply_markup=broadcast_audience_keyboard(groups),
         )
+
+    @router.callback_query(F.data == "admin:users_export")
+    async def export_users(callback: CallbackQuery) -> None:
+        if not is_admin(callback.from_user.id):
+            await deny_callback(callback)
+            return
+        await callback.answer("Готовлю Excel-файл…")
+        try:
+            users = await db.all_users()
+            content = await asyncio.to_thread(build_users_workbook, users)
+            filename = f"users-{datetime.now():%Y-%m-%d_%H-%M-%S}.xlsx"
+            await callback.message.answer_document(
+                BufferedInputFile(content, filename=filename),
+                caption=f"Все пользователи бота: <b>{len(users)}</b>",
+            )
+        except Exception as error:
+            await reporter.report("Выгрузка пользователей в Excel", error)
+            await callback.message.answer(
+                "Не удалось сформировать Excel-файл. Ошибка отправлена администратору."
+            )
 
     @router.callback_query(
         AdminBroadcast.choosing_audience,
