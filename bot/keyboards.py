@@ -1,4 +1,4 @@
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
+from aiogram.types import CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
 
 MAIN_KEYBOARD_VERSION = 2
@@ -85,6 +85,21 @@ def main_keyboard() -> ReplyKeyboardMarkup:
 
 
 def donation_keyboard(donation_url: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="💚 Поддержать", url=donation_url),
-    ]])
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📋 Скопировать номер (СБП)",
+                    copy_text=CopyTextButton(
+                        text="+79086047055",
+                    ),
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="💚 Поддержать (У кого Т-Банк)",
+                    url=donation_url,
+                ),
+            ],
+        ],
+    )
