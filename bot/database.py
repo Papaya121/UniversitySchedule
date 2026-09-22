@@ -1,7 +1,15 @@
 import asyncio
+import hashlib
+import json
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
+from uuid import uuid4
+
+from bot.models import DaySchedule, Lesson
+
+
+EMPTY_SCHEDULE_FINGERPRINT = hashlib.sha256(b"[]").hexdigest()
 
 
 class Database:
@@ -31,7 +39,21 @@ class Database:
                     day TEXT NOT NULL,
                     subgroup INTEGER NOT NULL,
                     fingerprint TEXT NOT NULL,
+                    lesson_count INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY(group_name, day, subgroup)
+                );
+                CREATE TABLE IF NOT EXISTS schedule_cache (
+                    group_name TEXT NOT NULL,
+                    day TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(group_name, day)
+                );
+                CREATE TABLE IF NOT EXISTS schedule_guard_incidents (
+                    group_name TEXT PRIMARY KEY,
+                    active INTEGER NOT NULL DEFAULT 0,
+                    started_at TEXT,
+                    resolved_at TEXT
                 );
                 CREATE TABLE IF NOT EXISTS deliveries (
                     chat_id INTEGER NOT NULL,
@@ -96,14 +118,29 @@ class Database:
                         day TEXT NOT NULL,
                         subgroup INTEGER NOT NULL,
                         fingerprint TEXT NOT NULL,
+                        lesson_count INTEGER NOT NULL DEFAULT 0,
                         PRIMARY KEY(group_name, day, subgroup)
                     );
                 """)
                 self._connection.execute("""
-                    INSERT INTO schedule_snapshots(group_name, day, subgroup, fingerprint)
-                    SELECT ?, day, subgroup, fingerprint FROM old_schedule_snapshots
-                """, (default_group,))
+                    INSERT INTO schedule_snapshots(
+                        group_name, day, subgroup, fingerprint, lesson_count
+                    )
+                    SELECT ?, day, subgroup, fingerprint,
+                           CASE WHEN fingerprint = ? THEN 0 ELSE 1 END
+                    FROM old_schedule_snapshots
+                """, (default_group, EMPTY_SCHEDULE_FINGERPRINT))
                 self._connection.execute("DROP TABLE old_schedule_snapshots")
+                snapshot_columns.add("lesson_count")
+            if "lesson_count" not in snapshot_columns:
+                self._connection.execute(
+                    "ALTER TABLE schedule_snapshots "
+                    "ADD COLUMN lesson_count INTEGER NOT NULL DEFAULT 0"
+                )
+                self._connection.execute("""
+                    UPDATE schedule_snapshots
+                    SET lesson_count = CASE WHEN fingerprint = ? THEN 0 ELSE 1 END
+                """, (EMPTY_SCHEDULE_FINGERPRINT,))
             broadcast_columns = {
                 row["name"] for row in
                 self._connection.execute("PRAGMA table_info(broadcasts)").fetchall()
@@ -326,19 +363,146 @@ class Database:
             }
 
     async def snapshot(self, group_name: str, day: date, subgroup: int) -> str | None:
+        row = await self.snapshot_record(group_name, day, subgroup)
+        return row["fingerprint"] if row else None
+
+    async def snapshot_record(
+        self, group_name: str, day: date, subgroup: int
+    ) -> sqlite3.Row | None:
         async with self._lock:
-            row = self._connection.execute(
-                "SELECT fingerprint FROM schedule_snapshots WHERE group_name = ? AND day = ? AND subgroup = ?",
+            return self._connection.execute(
+                "SELECT fingerprint, lesson_count FROM schedule_snapshots "
+                "WHERE group_name = ? AND day = ? AND subgroup = ?",
                 (group_name, day.isoformat(), subgroup),
             ).fetchone()
-            return row["fingerprint"] if row else None
 
-    async def save_snapshot(self, group_name: str, day: date, subgroup: int, fingerprint: str) -> None:
+    async def save_snapshot(
+        self, group_name: str, day: date, subgroup: int, fingerprint: str,
+        lesson_count: int | None = None,
+    ) -> None:
+        if lesson_count is None:
+            lesson_count = 0 if fingerprint == EMPTY_SCHEDULE_FINGERPRINT else 1
         async with self._lock:
             self._connection.execute("""
-                INSERT INTO schedule_snapshots(group_name, day, subgroup, fingerprint) VALUES (?, ?, ?, ?)
-                ON CONFLICT(group_name, day, subgroup) DO UPDATE SET fingerprint=excluded.fingerprint
-            """, (group_name, day.isoformat(), subgroup, fingerprint))
+                INSERT INTO schedule_snapshots(
+                    group_name, day, subgroup, fingerprint, lesson_count
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(group_name, day, subgroup) DO UPDATE SET
+                    fingerprint=excluded.fingerprint,
+                    lesson_count=excluded.lesson_count
+            """, (
+                group_name, day.isoformat(), subgroup, fingerprint, lesson_count,
+            ))
+            self._connection.commit()
+
+    async def had_lessons_between(
+        self, group_name: str, start: date, end: date
+    ) -> bool:
+        async with self._lock:
+            row = self._connection.execute("""
+                SELECT 1 FROM schedule_snapshots
+                WHERE group_name = ? AND day BETWEEN ? AND ? AND lesson_count > 0
+                LIMIT 1
+            """, (group_name, start.isoformat(), end.isoformat())).fetchone()
+            return row is not None
+
+    async def has_snapshots(self, group_name: str) -> bool:
+        async with self._lock:
+            row = self._connection.execute(
+                "SELECT 1 FROM schedule_snapshots WHERE group_name = ? LIMIT 1",
+                (group_name,),
+            ).fetchone()
+            return row is not None
+
+    async def save_schedule_cache(
+        self, group_name: str, schedules: dict[date, DaySchedule]
+    ) -> None:
+        updated_at = datetime.now().isoformat(timespec="seconds")
+        rows = []
+        for day, schedule in schedules.items():
+            payload = json.dumps([
+                {
+                    "starts_at": lesson.starts_at.isoformat(timespec="minutes"),
+                    "ends_at": lesson.ends_at.isoformat(timespec="minutes"),
+                    "subject": lesson.subject,
+                    "subgroup": lesson.subgroup,
+                    "room": lesson.room,
+                    "teacher": lesson.teacher,
+                }
+                for lesson in schedule.lessons
+            ], ensure_ascii=False, separators=(",", ":"))
+            rows.append((group_name, day.isoformat(), payload, updated_at))
+        async with self._lock:
+            self._connection.execute(
+                "DELETE FROM schedule_cache WHERE group_name = ?", (group_name,)
+            )
+            self._connection.executemany("""
+                INSERT INTO schedule_cache(group_name, day, payload, updated_at)
+                VALUES (?, ?, ?, ?)
+            """, rows)
+            self._connection.commit()
+
+    async def load_schedule_cache(self, group_name: str) -> dict[date, DaySchedule]:
+        async with self._lock:
+            rows = self._connection.execute("""
+                SELECT day, payload FROM schedule_cache
+                WHERE group_name = ? ORDER BY day
+            """, (group_name,)).fetchall()
+        result: dict[date, DaySchedule] = {}
+        for row in rows:
+            day = date.fromisoformat(row["day"])
+            lessons = tuple(
+                Lesson(
+                    starts_at=time.fromisoformat(item["starts_at"]),
+                    ends_at=time.fromisoformat(item["ends_at"]),
+                    subject=item["subject"],
+                    subgroup=item["subgroup"],
+                    room=item["room"],
+                    teacher=item["teacher"],
+                )
+                for item in json.loads(row["payload"])
+            )
+            result[day] = DaySchedule(day, lessons)
+        return result
+
+    async def start_empty_schedule_incident(self, group_name: str) -> bool:
+        now = datetime.now().isoformat(timespec="seconds")
+        async with self._lock:
+            row = self._connection.execute(
+                "SELECT active FROM schedule_guard_incidents WHERE group_name = ?",
+                (group_name,),
+            ).fetchone()
+            if row and row["active"]:
+                return False
+            self._connection.execute("""
+                INSERT INTO schedule_guard_incidents(
+                    group_name, active, started_at, resolved_at
+                ) VALUES (?, 1, ?, NULL)
+                ON CONFLICT(group_name) DO UPDATE SET
+                    active=1, started_at=excluded.started_at, resolved_at=NULL
+            """, (group_name, now))
+            self._connection.commit()
+            return True
+
+    async def resolve_empty_schedule_incident(self, group_name: str) -> bool:
+        now = datetime.now().isoformat(timespec="seconds")
+        async with self._lock:
+            cursor = self._connection.execute("""
+                UPDATE schedule_guard_incidents
+                SET active=0, resolved_at=?
+                WHERE group_name=? AND active=1
+            """, (now, group_name))
+            self._connection.commit()
+            return cursor.rowcount == 1
+
+    async def release_empty_schedule_incident(self, group_name: str) -> None:
+        """Allow retrying an admin alert that could not be delivered."""
+        async with self._lock:
+            self._connection.execute(
+                "DELETE FROM schedule_guard_incidents "
+                "WHERE group_name = ? AND active = 1",
+                (group_name,),
+            )
             self._connection.commit()
 
     async def claim_delivery(self, chat_id: int, kind: str, day: date) -> bool:
@@ -358,6 +522,31 @@ class Database:
                 (chat_id, kind, day.isoformat()),
             )
             self._connection.commit()
+
+    async def backup_to(self, destination: Path) -> Path:
+        """Create a consistent SQLite snapshot, including data still stored in WAL."""
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(
+            f".{destination.name}.{uuid4().hex}.tmp"
+        )
+
+        try:
+            async with self._lock:
+                target = sqlite3.connect(temporary)
+                try:
+                    self._connection.backup(target)
+                    result = target.execute("PRAGMA integrity_check").fetchone()
+                    if not result or result[0] != "ok":
+                        raise sqlite3.DatabaseError(
+                            f"Backup integrity check failed: {result!r}"
+                        )
+                finally:
+                    target.close()
+            temporary.replace(destination)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
+        return destination
 
     async def close(self) -> None:
         async with self._lock:

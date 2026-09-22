@@ -1,0 +1,17 @@
+[Unit]
+Description=VGLTU Telegram schedule bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/papaya/UniversitySchedule
+EnvironmentFile=/home/papaya/UniversitySchedule/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/papaya/UniversitySchedule/.venv/bin/python -m bot
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

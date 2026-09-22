@@ -9,6 +9,7 @@ from aiogram.types import BotCommand, BotCommandScopeChat, ErrorEvent
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from bot.admin import build_admin_router
+from bot.backup import BackupManager
 from bot.config import Settings
 from bot.database import Database
 from bot.error_reporter import ErrorReporter, is_message_not_modified
@@ -28,7 +29,17 @@ async def main() -> None:
     await database.initialize(settings.group_name)
     client = ScheduleClient(settings.schedule_url)
     reporter = ErrorReporter(bot, database, settings.admin_ids, settings.tz)
-    service = ScheduleService(bot, database, client, settings.tz, reporter)
+    backups = BackupManager(
+        database, settings.backup_directory, settings.backup_retention_days
+    )
+    service = ScheduleService(
+        bot,
+        database,
+        client,
+        settings.tz,
+        reporter,
+        time(settings.morning_hour, settings.morning_minute),
+    )
 
     dispatcher = Dispatcher()
     dispatcher.include_router(build_admin_router(bot, database, settings.admin_ids, reporter))
@@ -60,9 +71,11 @@ async def main() -> None:
     scheduler.add_job(
         service.send_morning,
         "cron",
-        hour=settings.morning_hour,
-        minute=settings.morning_minute,
+        hour=f"0-{min(23, settings.morning_hour + 2)}",
+        minute="*",
         id="morning_schedule",
+        max_instances=1,
+        coalesce=True,
         misfire_grace_time=1800,
     )
     scheduler.add_job(
@@ -80,6 +93,23 @@ async def main() -> None:
         id="next_lesson",
         max_instances=1,
         coalesce=True,
+    )
+
+    async def create_backup() -> None:
+        try:
+            await backups.create(datetime.now(settings.tz))
+        except Exception as error:
+            await reporter.report("Резервное копирование базы данных", error)
+
+    scheduler.add_job(
+        create_backup,
+        "cron",
+        hour=settings.backup_hour,
+        minute=settings.backup_minute,
+        id="database_backup",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
     )
 
     common_commands = [
@@ -103,11 +133,11 @@ async def main() -> None:
         except Exception as error:
             await reporter.report(f"Настройка меню администратора {admin_id}", error)
     scheduler.start()
+    await create_backup()
     await service.check_changes()
     now = datetime.now(settings.tz)
-    morning_at = time(settings.morning_hour, settings.morning_minute)
-    # If the process restarted shortly after 09:00, do not lose today's mailing.
-    if morning_at <= now.time() < time(12, 0):
+    # Catch up after a restart; SQLite prevents a duplicate delivery.
+    if now.time() < time(min(23, settings.morning_hour + 3), 0):
         await service.send_morning()
     try:
         await dispatcher.start_polling(bot, allowed_updates=dispatcher.resolve_used_update_types())

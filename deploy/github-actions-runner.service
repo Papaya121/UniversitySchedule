@@ -1,0 +1,15 @@
+[Unit]
+Description=GitHub Actions runner for UniversitySchedule
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/papaya/actions-runner-university-schedule
+ExecStart=/home/papaya/actions-runner-university-schedule/run.sh
+Restart=always
+RestartSec=5
+TimeoutStopSec=5min
+
+[Install]
+WantedBy=default.target

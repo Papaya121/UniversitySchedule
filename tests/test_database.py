@@ -1,9 +1,12 @@
 import tempfile
 import unittest
 import sqlite3
-from datetime import date
+import os
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
+from bot.backup import BackupManager
 from bot.database import Database
 
 
@@ -79,6 +82,29 @@ class DatabaseTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stats["errors_today"], 1)
         self.assertEqual(stats["broadcast_delivered"], 1)
 
+    async def test_creates_restorable_backup_and_removes_expired_files(self) -> None:
+        await self.db.upsert_user(42, "ИС2-261-ОБ", 1, "Иван", "ivan")
+        backup_directory = Path(self.temp_dir.name) / "backups"
+        manager = BackupManager(self.db, backup_directory, retention_days=14)
+        now = datetime(2026, 9, 22, 3, 0, tzinfo=ZoneInfo("Europe/Moscow"))
+
+        expired = backup_directory / "bot-20260801-030000.sqlite3"
+        backup_directory.mkdir()
+        expired.touch()
+        old_timestamp = (now - timedelta(days=15)).timestamp()
+        os.utime(expired, (old_timestamp, old_timestamp))
+
+        backup = await manager.create(now)
+
+        self.assertTrue(backup.exists())
+        self.assertFalse(expired.exists())
+        restored = sqlite3.connect(backup)
+        try:
+            self.assertEqual(restored.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+            self.assertEqual(restored.execute("SELECT COUNT(*) FROM users").fetchone()[0], 1)
+        finally:
+            restored.close()
+
 
 class LegacyDatabaseMigrationTest(unittest.IsolatedAsyncioTestCase):
     async def test_adds_groups_without_losing_existing_user(self) -> None:
@@ -109,6 +135,10 @@ class LegacyDatabaseMigrationTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 await database.snapshot("ИС2-261-ОБ", date(2026, 9, 4), 2), "abc"
             )
+            migrated = await database.snapshot_record(
+                "ИС2-261-ОБ", date(2026, 9, 4), 2
+            )
+            self.assertEqual(migrated["lesson_count"], 1)
             self.assertEqual(await database.known_groups(), ["ИС2-261-ОБ"])
             await database.close()
 

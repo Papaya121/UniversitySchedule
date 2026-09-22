@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     schedule_url: str = "https://kis.vgltu.ru/schedule"
     timezone: str = "Europe/Moscow"
     database_path: Path = Path("data/bot.sqlite3")
+    backup_directory: Path = Path("backups")
+    backup_retention_days: int = Field(default=14, ge=1, le=365)
+    backup_hour: int = Field(default=3, ge=0, le=23)
+    backup_minute: int = Field(default=0, ge=0, le=59)
     check_interval_minutes: int = Field(default=20, ge=1, le=1440)
     morning_hour: int = Field(default=9, ge=0, le=23)
     morning_minute: int = Field(default=0, ge=0, le=59)

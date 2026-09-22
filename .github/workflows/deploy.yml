@@ -1,0 +1,43 @@
+name: Test and deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: university-schedule-production
+  cancel-in-progress: false
+
+jobs:
+  test-and-deploy:
+    if: github.repository == 'Papaya121/UniversitySchedule'
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - university-schedule
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Create test environment
+        run: |
+          python3 -m venv .ci-venv
+          .ci-venv/bin/python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Run tests
+        run: .ci-venv/bin/python -m unittest discover -s tests -v
+
+      - name: Deploy
+        env:
+          APP_DIR: /home/papaya/UniversitySchedule
+        run: bash deploy/deploy.sh

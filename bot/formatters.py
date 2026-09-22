@@ -41,3 +41,22 @@ def format_schedule(schedule: DaySchedule, title: str | None = None) -> str:
 def format_change(schedule: DaySchedule) -> str:
     return "🔔 <b>Расписание изменилось</b>\n\n" + format_schedule(schedule, "Актуальная версия")
 
+
+def format_new_schedule_period(days: list[date]) -> str:
+    ordered = sorted(set(days))
+    first = ordered[0]
+    last = ordered[-1]
+    if first == last:
+        period = f"{first.day} {MONTHS[first.month]}"
+    elif first.month == last.month and first.year == last.year:
+        period = f"{first.day}–{last.day} {MONTHS[first.month]}"
+    else:
+        period = (
+            f"{first.day} {MONTHS[first.month]} – "
+            f"{last.day} {MONTHS[last.month]}"
+        )
+    return (
+        "📚 <b>Добавлено новое расписание</b>\n\n"
+        f"Появились пары на период <b>{period}</b>.\n"
+        "Открой раздел «🗓 Неделя», чтобы посмотреть подробности."
+    )

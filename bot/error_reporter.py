@@ -24,6 +24,16 @@ class ErrorReporter:
         self.admin_ids = admin_ids
         self.timezone = timezone
 
+    async def notify_admins(self, text: str) -> bool:
+        delivered = False
+        for admin_id in self.admin_ids:
+            try:
+                await self.bot.send_message(admin_id, text)
+                delivered = True
+            except Exception:
+                logger.exception("Could not notify admin %s", admin_id)
+        return delivered
+
     async def report(self, context: str, error: BaseException) -> None:
         logger.error("%s: %s", context, error, exc_info=error)
         try:
@@ -40,9 +50,5 @@ class ErrorReporter:
             f"<b>Сообщение:</b> {html.escape(str(error) or 'без сообщения')}\n\n"
             f"<pre>{html.escape(trace[-2800:])}</pre>"
         )
-        for admin_id in self.admin_ids:
-            try:
-                await self.bot.send_message(admin_id, text)
-            except Exception:
-                # Reporting an error must never create an error-reporting loop.
-                logger.exception("Could not notify admin %s", admin_id)
+        # Reporting an error must never create an error-reporting loop.
+        await self.notify_admins(text)

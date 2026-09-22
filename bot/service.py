@@ -15,29 +15,52 @@ from aiogram.exceptions import (
 
 from bot.database import Database
 from bot.error_reporter import ErrorReporter
-from bot.formatters import format_change, format_schedule
+from bot.formatters import format_change, format_new_schedule_period, format_schedule
 from bot.models import DaySchedule
 from bot.schedule_client import ScheduleClient
 
 logger = logging.getLogger(__name__)
 
 
+class SuspiciousEmptyScheduleError(RuntimeError):
+    """The website returned an all-empty window that was rejected by the guard."""
+
+
+def morning_delivery_time(
+    schedule: DaySchedule, default_time: time, timezone
+) -> datetime:
+    """Return min(default time, 90 minutes before the first lesson)."""
+    default_at = datetime.combine(schedule.day, default_time, tzinfo=timezone)
+    if not schedule.lessons:
+        return default_at
+    first_start = min(lesson.starts_at for lesson in schedule.lessons)
+    before_first = datetime.combine(schedule.day, first_start, tzinfo=timezone) - timedelta(
+        minutes=90
+    )
+    return min(default_at, before_first)
+
+
 class ScheduleService:
     def __init__(
         self, bot: Bot, database: Database, client: ScheduleClient, timezone,
-        error_reporter: ErrorReporter,
+        error_reporter: ErrorReporter, morning_time: time = time(9, 0),
     ) -> None:
         self.bot = bot
         self.db = database
         self.client = client
         self.timezone = timezone
         self.error_reporter = error_reporter
+        self.morning_time = morning_time
         self._cache: dict[str, dict[date, DaySchedule]] = {}
         self._cache_at: dict[str, datetime] = {}
         self._fetch_lock = asyncio.Lock()
 
-    async def schedules(self, group_name: str, force: bool = False) -> dict[date, DaySchedule]:
+    async def schedules(
+        self, group_name: str, force: bool = False, allow_stale: bool = False
+    ) -> dict[date, DaySchedule]:
         now = datetime.now(self.timezone)
+        if allow_stale and group_name in self._cache:
+            return self._cache[group_name]
         cached_at = self._cache_at.get(group_name)
         if not force and cached_at and now - cached_at < timedelta(minutes=5):
             return self._cache[group_name]
@@ -46,12 +69,59 @@ class ScheduleService:
             cached_at = self._cache_at.get(group_name)
             if not force and cached_at and now - cached_at < timedelta(minutes=5):
                 return self._cache[group_name]
-            self._cache[group_name] = await self.client.fetch(group_name, now.date(), days=14)
+            candidate = await self.client.fetch(group_name, now.date(), days=14)
+            candidate_days = sorted(candidate)
+            range_start = candidate_days[0] if candidate_days else now.date()
+            range_end = candidate_days[-1] if candidate_days else now.date() + timedelta(days=13)
+            all_days_empty = not candidate or all(
+                not schedule.lessons for schedule in candidate.values()
+            )
+            previously_had_lessons = await self.db.had_lessons_between(
+                group_name, range_start, range_end
+            )
+            if all_days_empty and previously_had_lessons:
+                first_alert = await self.db.start_empty_schedule_incident(group_name)
+                if first_alert:
+                    alert_delivered = await self.error_reporter.notify_admins(
+                        "🛡 <b>Защита расписания сработала</b>\n\n"
+                        f"Группа: <b>{html.escape(group_name)}</b>\n"
+                        f"Период: <b>{range_start:%d.%m.%Y}–{range_end:%d.%m.%Y}</b>\n\n"
+                        "Сайт ВГЛТУ вернул только дни без пар, хотя раньше на этих "
+                        "датах были занятия. Обновление отклонено, сохранена последняя "
+                        "корректная версия."
+                    )
+                    if not alert_delivered:
+                        await self.db.release_empty_schedule_incident(group_name)
+                cached = self._cache.get(group_name)
+                if cached is None:
+                    cached = await self.db.load_schedule_cache(group_name)
+                if cached:
+                    self._cache[group_name] = cached
+                    self._cache_at[group_name] = now
+                    return cached
+                raise SuspiciousEmptyScheduleError(
+                    f"All-empty schedule rejected for {group_name}"
+                )
+
+            recovered = await self.db.resolve_empty_schedule_incident(group_name)
+            if recovered:
+                await self.error_reporter.notify_admins(
+                    "✅ <b>Расписание снова доступно</b>\n\n"
+                    f"Группа <b>{html.escape(group_name)}</b>: сайт вернул корректные "
+                    "данные, автоматические обновления возобновлены."
+                )
+            await self.db.save_schedule_cache(group_name, candidate)
+            self._cache[group_name] = candidate
             self._cache_at[group_name] = now
             return self._cache[group_name]
 
-    async def for_day(self, group_name: str, day: date, subgroup: int, force: bool = False) -> DaySchedule:
-        schedules = await self.schedules(group_name, force=force)
+    async def for_day(
+        self, group_name: str, day: date, subgroup: int, force: bool = False,
+        allow_stale: bool = False,
+    ) -> DaySchedule:
+        schedules = await self.schedules(
+            group_name, force=force, allow_stale=allow_stale
+        )
         return schedules.get(day, DaySchedule(day, ())).for_subgroup(subgroup)
 
     async def group_exists(self, group_name: str) -> bool:
@@ -71,32 +141,66 @@ class ScheduleService:
         try:
             now = datetime.now(self.timezone)
             for group_name in await self.db.active_groups():
-                schedules = await self.schedules(group_name, force=True)
+                try:
+                    schedules = await self.schedules(group_name, force=True)
+                except SuspiciousEmptyScheduleError:
+                    continue
+                except Exception as error:
+                    await self.error_reporter.report(
+                        f"Проверка изменений расписания группы {group_name}", error
+                    )
+                    continue
+                established_schedule = await self.db.has_snapshots(group_name)
+                newly_added: dict[int, list[date]] = {1: [], 2: []}
                 for day in sorted(x for x in schedules if x >= now.date()):
                     for subgroup in (1, 2):
                         filtered = schedules[day].for_subgroup(subgroup)
                         fingerprint = self.fingerprint(filtered)
-                        previous = await self.db.snapshot(group_name, day, subgroup)
-                        await self.db.save_snapshot(group_name, day, subgroup, fingerprint)
+                        lesson_count = len(filtered.lessons)
+                        previous = await self.db.snapshot_record(
+                            group_name, day, subgroup
+                        )
+                        await self.db.save_snapshot(
+                            group_name, day, subgroup, fingerprint, lesson_count
+                        )
                         # The first observation is a baseline, not a change.
-                        if previous is not None and previous != fingerprint:
+                        if previous is None:
+                            if established_schedule and lesson_count > 0:
+                                newly_added[subgroup].append(day)
+                            continue
+                        if previous["lesson_count"] == 0 and lesson_count > 0:
+                            newly_added[subgroup].append(day)
+                        elif previous["fingerprint"] != fingerprint:
                             await self.broadcast(group_name, subgroup, format_change(filtered))
+                for subgroup, days in newly_added.items():
+                    if days:
+                        await self.broadcast(
+                            group_name, subgroup, format_new_schedule_period(days)
+                        )
         except Exception as error:
             await self.error_reporter.report("Проверка изменений расписания", error)
 
     async def send_morning(self) -> None:
-        today = datetime.now(self.timezone).date()
+        now = datetime.now(self.timezone)
+        today = now.date()
         try:
-            for group_name in await self.db.active_groups():
-                await self.schedules(group_name, force=True)
             for user in await self.db.active_users():
+                schedule = await self.for_day(
+                    user["group_name"], today, user["subgroup"], allow_stale=True
+                )
+                delivery_at = morning_delivery_time(
+                    schedule, self.morning_time, self.timezone
+                )
+                if now < delivery_at:
+                    continue
                 if await self.db.claim_delivery(user["chat_id"], "morning", today):
-                    schedule = await self.for_day(user["group_name"], today, user["subgroup"])
                     sent = await self.safe_send(
                         user["chat_id"], "☀️ Доброе утро!\n\n" + format_schedule(schedule, "Сегодня")
                     )
                     if not sent:
                         await self.db.release_delivery(user["chat_id"], "morning", today)
+        except SuspiciousEmptyScheduleError:
+            return
         except Exception as error:
             await self.error_reporter.report("Утренняя рассылка", error)
 
@@ -118,6 +222,8 @@ class ScheduleService:
                     )
                     if not sent:
                         await self.db.release_delivery(user["chat_id"], "tomorrow", today)
+        except SuspiciousEmptyScheduleError:
+            return
         except Exception as error:
             await self.error_reporter.report("Рассылка расписания на завтра", error)
 
@@ -160,6 +266,8 @@ class ScheduleService:
                 sent = await self.safe_send(user["chat_id"], message)
                 if not sent:
                     await self.db.release_delivery(user["chat_id"], kind, now.date())
+        except SuspiciousEmptyScheduleError:
+            return
         except Exception as error:
             await self.error_reporter.report("Уведомления о следующей паре", error)
 
