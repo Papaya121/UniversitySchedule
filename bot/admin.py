@@ -63,7 +63,7 @@ def build_admin_router(
             f"📣 Массовых рассылок: <b>{stats['broadcast_count']}</b> "
             f"({stats['broadcast_delivered']} доставлено)\n\n"
             f"<b>Группы:</b>\n{group_lines}"
-            f"\nВерсия 0.2.0"
+            f"\n\n<b>Версия 0.2.0</b>"
         )
 
     @router.message(Command("myid"))
