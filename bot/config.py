@@ -10,6 +10,10 @@ class Settings(BaseSettings):
     admin_ids_value: str = Field(default="", alias="ADMIN_IDS")
     group_name: str = "ИС2-261-ОБ"
     schedule_url: str = "https://kis.vgltu.ru/schedule"
+    donation_url: str = Field(
+        default="https://tbank.ru/cf/3o4Kr2VJXCE",
+        pattern=r"^https://",
+    )
     timezone: str = "Europe/Moscow"
     database_path: Path = Path("data/bot.sqlite3")
     backup_directory: Path = Path("backups")

@@ -31,6 +31,7 @@ class Database:
                     username TEXT,
                     active INTEGER NOT NULL DEFAULT 1,
                     next_lesson_notifications INTEGER NOT NULL DEFAULT 1,
+                    menu_version INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -97,6 +98,10 @@ class Database:
                 self._connection.execute(
                     "ALTER TABLE users ADD COLUMN next_lesson_notifications "
                     "INTEGER NOT NULL DEFAULT 1"
+                )
+            if "menu_version" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE users ADD COLUMN menu_version INTEGER NOT NULL DEFAULT 0"
                 )
             if "group_name" not in columns:
                 self._connection.execute(
@@ -197,6 +202,32 @@ class Database:
             return self._connection.execute(
                 "SELECT * FROM users WHERE chat_id = ?", (chat_id,)
             ).fetchone()
+
+    async def claim_menu_refresh(self, chat_id: int, version: int) -> bool:
+        """Claim a one-time keyboard refresh for an existing profile."""
+        async with self._lock:
+            cursor = self._connection.execute("""
+                UPDATE users SET menu_version = ?
+                WHERE chat_id = ? AND menu_version < ?
+            """, (version, chat_id, version))
+            self._connection.commit()
+            return cursor.rowcount == 1
+
+    async def set_menu_version(self, chat_id: int, version: int) -> None:
+        async with self._lock:
+            self._connection.execute(
+                "UPDATE users SET menu_version = ? WHERE chat_id = ?",
+                (version, chat_id),
+            )
+            self._connection.commit()
+
+    async def release_menu_refresh(self, chat_id: int, version: int) -> None:
+        async with self._lock:
+            self._connection.execute("""
+                UPDATE users SET menu_version = ?
+                WHERE chat_id = ? AND menu_version = ?
+            """, (max(0, version - 1), chat_id, version))
+            self._connection.commit()
 
     async def all_users(self) -> list[sqlite3.Row]:
         async with self._lock:

@@ -1,6 +1,9 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
 
+MAIN_KEYBOARD_VERSION = 2
+
+
 def subgroup_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="1️⃣ Первая", callback_data="subgroup:1"),
@@ -74,7 +77,14 @@ def main_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="📚 Сегодня"), KeyboardButton(text="🌙 Завтра")],
             [KeyboardButton(text="🗓 Неделя"), KeyboardButton(text="⚙️ Настройки")],
+            [KeyboardButton(text="❤️ Поддержать разработчика")],
         ],
         resize_keyboard=True,
         input_field_placeholder="Выбери, что показать",
     )
+
+
+def donation_keyboard(donation_url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="💚 Поддержать", url=donation_url),
+    ]])

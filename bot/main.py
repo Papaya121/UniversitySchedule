@@ -43,7 +43,9 @@ async def main() -> None:
 
     dispatcher = Dispatcher()
     dispatcher.include_router(build_admin_router(bot, database, settings.admin_ids, reporter))
-    dispatcher.include_router(build_router(database, service, reporter))
+    dispatcher.include_router(
+        build_router(database, service, reporter, settings.donation_url)
+    )
 
     @dispatcher.error()
     async def dispatcher_error(event: ErrorEvent) -> bool:
@@ -117,6 +119,7 @@ async def main() -> None:
         BotCommand(command="tomorrow", description="Расписание на завтра"),
         BotCommand(command="week", description="Расписание на неделю"),
         BotCommand(command="settings", description="Настройки профиля"),
+        BotCommand(command="donate", description="Поддержать разработчика"),
         BotCommand(command="myid", description="Показать мой Telegram ID"),
         BotCommand(command="help", description="Помощь"),
     ]

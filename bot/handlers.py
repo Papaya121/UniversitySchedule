@@ -1,17 +1,21 @@
 import html
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
+from typing import Any
 
-from aiogram import F, Router
+from aiogram import BaseMiddleware, F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, ErrorEvent, Message
+from aiogram.types import CallbackQuery, ErrorEvent, Message, TelegramObject
 
 from bot.database import Database
 from bot.error_reporter import ErrorReporter, is_message_not_modified
 from bot.formatters import format_schedule
 from bot.keyboards import (
+    MAIN_KEYBOARD_VERSION,
+    donation_keyboard,
     group_keyboard,
     main_keyboard,
     notification_choice_keyboard,
@@ -29,13 +33,50 @@ class ProfileSetup(StatesGroup):
     waiting_for_notifications = State()
 
 
+class MenuRefreshMiddleware(BaseMiddleware):
+    def __init__(self, db: Database, reporter: ErrorReporter) -> None:
+        self.db = db
+        self.reporter = reporter
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        if isinstance(event, Message):
+            user = await self.db.get_user(event.chat.id)
+            if user and await self.db.claim_menu_refresh(
+                event.chat.id, MAIN_KEYBOARD_VERSION
+            ):
+                try:
+                    command = (event.text or "").split(maxsplit=1)[0].split("@", 1)[0]
+                    if command not in {"/start", "/help"}:
+                        await event.answer(
+                            "✨ Главное меню обновлено",
+                            reply_markup=main_keyboard(),
+                        )
+                except Exception as error:
+                    await self.db.release_menu_refresh(
+                        event.chat.id, MAIN_KEYBOARD_VERSION
+                    )
+                    await self.reporter.report("Обновление главного меню", error)
+        return await handler(event, data)
+
+
 def normalize_group(value: str) -> str:
     """Group identifiers on the university site are uppercase and contain no spaces."""
     return "".join(value.split()).upper()
 
 
-def build_router(db: Database, service: ScheduleService, reporter: ErrorReporter) -> Router:
+def build_router(
+    db: Database,
+    service: ScheduleService,
+    reporter: ErrorReporter,
+    donation_url: str,
+) -> Router:
     router = Router()
+    router.message.outer_middleware(MenuRefreshMiddleware(db, reporter))
 
     async def ask_group(message: Message, state: FSMContext, mode: str) -> None:
         groups = await db.known_groups()
@@ -107,6 +148,7 @@ def build_router(db: Database, service: ScheduleService, reporter: ErrorReporter
         await state.clear()
         user = await db.get_user(message.chat.id)
         if user:
+            await db.set_menu_version(message.chat.id, MAIN_KEYBOARD_VERSION)
             await message.answer(
                 f"С возвращением! Твой профиль: <b>{html.escape(user['group_name'])}</b>, "
                 f"<b>{user['subgroup']}-я подгруппа</b>.",
@@ -170,6 +212,7 @@ def build_router(db: Database, service: ScheduleService, reporter: ErrorReporter
             callback.message.chat.id, group_name, subgroup, user.first_name, user.username
         )
         await state.clear()
+        await db.set_menu_version(callback.message.chat.id, MAIN_KEYBOARD_VERSION)
         await callback.answer("Сохранено!")
         await callback.message.edit_text(
             f"Готово! <b>{html.escape(group_name)}</b>, <b>{subgroup}-я подгруппа</b> ✅\n"
@@ -198,6 +241,7 @@ def build_router(db: Database, service: ScheduleService, reporter: ErrorReporter
             data.get("username"),
         )
         await db.set_next_lesson_notifications(callback.message.chat.id, enabled)
+        await db.set_menu_version(callback.message.chat.id, MAIN_KEYBOARD_VERSION)
         await state.clear()
         status = "включены ✅" if enabled else "выключены ❌"
         await callback.answer("Профиль сохранён!")
@@ -284,6 +328,18 @@ def build_router(db: Database, service: ScheduleService, reporter: ErrorReporter
         await callback.answer(f"Уведомления {status}")
         await callback.message.edit_reply_markup(reply_markup=settings_keyboard(enabled))
 
+    @router.message(Command("donate"))
+    @router.message(F.text == "❤️ Поддержать разработчика")
+    async def donate(message: Message) -> None:
+        await message.answer(
+            "❤️ <b>Поддержать разработчика</b>\n\n"
+            "Бот полностью бесплатный, я разрабатываю и поддерживаю его "
+            "в свободное время.\n\n"
+            "Если бот оказался полезен и хочется сказать спасибо, можешь "
+            "поддержать его развитие любой суммой :)",
+            reply_markup=donation_keyboard(donation_url),
+        )
+
     @router.message(Command("help"))
     async def help_command(message: Message) -> None:
         await message.answer(
@@ -292,6 +348,7 @@ def build_router(db: Database, service: ScheduleService, reporter: ErrorReporter
             "🌙 /tomorrow — на завтра\n"
             "🗓 /week — на неделю\n"
             "⚙️ /settings — группа, подгруппа и уведомления\n\n"
+            "❤️ /donate — поддержать разработчика\n\n"
             "Изменения проверяются автоматически каждые 20 минут.",
             reply_markup=main_keyboard(),
         )

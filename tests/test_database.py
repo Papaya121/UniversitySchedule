@@ -46,6 +46,16 @@ class DatabaseTest(unittest.IsolatedAsyncioTestCase):
         await self.db.release_delivery(42, "morning", day)
         self.assertTrue(await self.db.claim_delivery(42, "morning", day))
 
+    async def test_menu_refresh_is_claimed_once_per_version(self) -> None:
+        await self.db.upsert_user(42, "ИС2-261-ОБ", 1, "Иван", "ivan")
+
+        self.assertTrue(await self.db.claim_menu_refresh(42, 2))
+        self.assertFalse(await self.db.claim_menu_refresh(42, 2))
+        await self.db.release_menu_refresh(42, 2)
+        self.assertTrue(await self.db.claim_menu_refresh(42, 2))
+        await self.db.set_menu_version(42, 3)
+        self.assertFalse(await self.db.claim_menu_refresh(42, 2))
+
     async def test_stores_schedule_fingerprint(self) -> None:
         day = date(2026, 9, 4)
         self.assertIsNone(await self.db.snapshot("ИС2-261-ОБ", day, 1))
@@ -142,6 +152,7 @@ class LegacyDatabaseMigrationTest(unittest.IsolatedAsyncioTestCase):
             user = await database.get_user(42)
             self.assertEqual(user["group_name"], "ИС2-261-ОБ")
             self.assertEqual(user["subgroup"], 2)
+            self.assertEqual(user["menu_version"], 0)
             self.assertEqual(
                 await database.snapshot("ИС2-261-ОБ", date(2026, 9, 4), 2), "abc"
             )
