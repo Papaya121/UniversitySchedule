@@ -59,6 +59,30 @@ systemctl --user status university-schedule-dev.service
 journalctl --user -u university-schedule-dev.service -f
 ```
 
+## Экстренное отключение
+
+В `/admin` → «Отключения» есть пауза для пользователей и полное отключение.
+Пауза сохраняется в базе и переживает перезапуск: обычные пользователи не могут
+пользоваться ботом и не получают автоматические уведомления. Администратор
+продолжает работать и может отправить ручную рассылку. Для включения паузы
+нужно подтверждение; вернуть обычный режим можно там же.
+
+Полное отключение требует двух подтверждений и точной фразы. Оно создаёт
+`data/bot-disabled`, останавливает и отключает текущий systemd-сервис. Пока
+маркер существует, бот не запустится даже после нового деплоя. Для ручного
+восстановления через SSH на соответствующей машине удалите маркер и включите
+нужный сервис, например для продакшена:
+
+```bash
+rm /home/papaya/UniversitySchedule/data/bot-disabled
+systemctl --user enable --now university-schedule.service
+```
+
+Для dev используйте `/home/papaya/UniversitySchedule-dev/data/bot-disabled` и
+`university-schedule-dev.service`. Если до полного отключения была включена
+пауза, она останется включённой после восстановления, пока администратор не
+выключит её в панели.
+
 Runner установлен в `/home/papaya/actions-runner-university-schedule` и работает
 как пользовательский сервис `github-actions-runner.service`. Для регистрации нужен
 одноразовый токен из `Settings → Actions → Runners → New self-hosted runner`:

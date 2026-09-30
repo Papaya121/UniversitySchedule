@@ -8,8 +8,9 @@ Type=simple
 WorkingDirectory=/home/papaya/UniversitySchedule
 EnvironmentFile=/home/papaya/UniversitySchedule/.env
 Environment=PYTHONUNBUFFERED=1
+Environment=BOT_SERVICE_NAME=university-schedule.service
 ExecStart=/home/papaya/UniversitySchedule/.venv/bin/python -m bot
-Restart=always
+Restart=on-failure
 RestartSec=10
 TimeoutStopSec=30
 

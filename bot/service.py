@@ -46,6 +46,7 @@ class ScheduleService:
     def __init__(
         self, bot: Bot, database: Database, client: ScheduleClient, timezone,
         error_reporter: ErrorReporter, morning_time: time = time(9, 0),
+        admin_ids: set[int] | None = None,
     ) -> None:
         self.bot = bot
         self.db = database
@@ -53,6 +54,7 @@ class ScheduleService:
         self.timezone = timezone
         self.error_reporter = error_reporter
         self.morning_time = morning_time
+        self.admin_ids = admin_ids or set()
         self._cache: dict[str, dict[date, DaySchedule]] = {}
         self._cache_at: dict[str, datetime] = {}
         self._fetch_lock = asyncio.Lock()
@@ -376,11 +378,15 @@ class ScheduleService:
             )
 
     async def safe_send(self, chat_id: int, text: str) -> bool:
+        if chat_id not in self.admin_ids and await self.db.access_mode() == "maintenance":
+            return False
         try:
             await self.bot.send_message(chat_id, text)
             return True
         except TelegramRetryAfter as error:
             await asyncio.sleep(error.retry_after)
+            if chat_id not in self.admin_ids and await self.db.access_mode() == "maintenance":
+                return False
             try:
                 await self.bot.send_message(chat_id, text)
                 return True

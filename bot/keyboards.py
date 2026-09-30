@@ -70,6 +70,25 @@ def admin_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📊 Обновить статистику", callback_data="admin:stats")],
         [InlineKeyboardButton(text="📣 Создать рассылку", callback_data="admin:broadcast")],
         [InlineKeyboardButton(text="📥 Скачать пользователей", callback_data="admin:users_export")],
+        [InlineKeyboardButton(text="🛑 Отключения", callback_data="admin:controls")],
+    ])
+
+
+def admin_controls_keyboard(maintenance: bool) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="🟢 Вернуть обычный режим" if maintenance else "⏸ Приостановить для пользователей",
+            callback_data="admin:maintenance:off" if maintenance else "admin:maintenance:request",
+        )],
+        [InlineKeyboardButton(text="🔴 Полностью отключить бота", callback_data="admin:shutdown:request")],
+        [InlineKeyboardButton(text="↩️ В админку", callback_data="admin:stats")],
+    ])
+
+
+def admin_confirm_keyboard(confirm: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Да, продолжить", callback_data=confirm)],
+        [InlineKeyboardButton(text="Нет, отменить", callback_data="admin:controls")],
     ])
 
 

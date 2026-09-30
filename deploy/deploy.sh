@@ -12,6 +12,10 @@ if [[ ! -f "${APP_DIR}/.env" ]]; then
   echo "Deployment stopped: ${APP_DIR}/.env does not exist" >&2
   exit 1
 fi
+if [[ -e "${APP_DIR}/data/bot-disabled" ]]; then
+  echo "Deployment stopped: bot was permanently disabled by administrator" >&2
+  exit 1
+fi
 
 # Fail before touching the service if Actions did not provide the new token.
 python3 "${SOURCE_DIR}/deploy/sync_token.py" "${APP_DIR}/.env"

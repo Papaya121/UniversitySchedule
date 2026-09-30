@@ -6,6 +6,11 @@ APP_DIR="/home/papaya/UniversitySchedule-dev"
 SERVICE_NAME="university-schedule-dev.service"
 SERVICE_DIR="${HOME}/.config/systemd/user"
 
+if [[ -e "${APP_DIR}/data/bot-disabled" ]]; then
+  echo "Deployment stopped: dev bot was permanently disabled by administrator" >&2
+  exit 1
+fi
+
 # This deployment always uses a fresh, separate location and database.
 if [[ ! "${TELEGRAM_BOT_TOKEN_DEV:-}" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
   echo "Deployment stopped: TELEGRAM_BOT_TOKEN_DEV is missing or invalid" >&2
