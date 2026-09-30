@@ -45,6 +45,19 @@ Workflow `.github/workflows/deploy.yml` запускается только по
 `university-schedule`. Перед каждым обновлением workflow запускает тесты, делает
 согласованную резервную копию SQLite и только после этого перезапускает бота.
 
+Push в `dev` запускает отдельный workflow `.github/workflows/deploy-dev.yml`.
+Он обновляет только `/home/papaya/UniversitySchedule-dev` и пользовательский сервис
+`university-schedule-dev.service`. Токен берётся из секрета репозитория
+`TELEGRAM_BOT_TOKEN_DEV` и записывается в отдельный `.env`. База SQLite и список
+пользователей у тестового бота отдельные и при первом запуске пустые. Продакшен
+остаётся в `/home/papaya/UniversitySchedule` под сервисом
+`university-schedule.service`. Для проверки тестового бота:
+
+```bash
+systemctl --user status university-schedule-dev.service
+journalctl --user -u university-schedule-dev.service -f
+```
+
 Runner установлен в `/home/papaya/actions-runner-university-schedule` и работает
 как пользовательский сервис `github-actions-runner.service`. Для регистрации нужен
 одноразовый токен из `Settings → Actions → Runners → New self-hosted runner`:

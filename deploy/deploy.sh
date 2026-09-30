@@ -72,9 +72,10 @@ if command -v docker >/dev/null 2>&1; then
   fi
 fi
 sleep 2
-mapfile -t REMAINING_BOTS < <(pgrep -f '[p]ython.*-m bot' || true)
-if (( ${#REMAINING_BOTS[@]} > 0 )); then
-  echo "Deployment stopped: another bot process is still running" >&2
+if pgrep -f '[p]ython.*-m bot' | while read -r pid; do
+  [[ "$(readlink -f "/proc/${pid}/cwd" 2>/dev/null || true)" == "$(realpath "${APP_DIR}")" ]] && exit 0
+done; then
+  echo "Deployment stopped: another production bot process is still running" >&2
   exit 1
 fi
 systemctl --user enable "${SERVICE_NAME}"
@@ -82,10 +83,9 @@ systemctl --user start "${SERVICE_NAME}"
 sleep 5
 systemctl --user is-active --quiet "${SERVICE_NAME}"
 MAIN_PID="$(systemctl --user show -P MainPID "${SERVICE_NAME}")"
-mapfile -t RUNNING_BOTS < <(pgrep -f '[p]ython.*-m bot' || true)
-if (( ${#RUNNING_BOTS[@]} != 1 )) || [[ "${RUNNING_BOTS[0]}" != "${MAIN_PID}" ]]; then
+if ! bash "${APP_DIR}/deploy/check_instance.sh" "${APP_DIR}" "${MAIN_PID}"; then
   systemctl --user stop "${SERVICE_NAME}"
-  echo "Deployment stopped: expected exactly one bot process" >&2
+  echo "Deployment stopped: expected exactly one production bot process" >&2
   exit 1
 fi
 

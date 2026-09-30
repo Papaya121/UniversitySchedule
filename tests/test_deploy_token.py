@@ -50,3 +50,24 @@ class SyncTokenTest(unittest.TestCase):
 
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(env_path.read_text(encoding="utf-8"), original)
+
+    def test_dev_token_uses_only_dev_secret(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            env_path = Path(directory) / ".env"
+            env_path.write_text("BOT_TOKEN=123456:placeholder\n", encoding="utf-8")
+            token = "987654321:dev_token_value_1234567890"
+            environment = os.environ.copy()
+            environment["TELEGRAM_BOT_TOKEN_DEV"] = token
+            environment["TELEGRAM_BOT_TOKEN_PROD"] = "123456789:production_token_value"
+
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), str(env_path), "TELEGRAM_BOT_TOKEN_DEV"],
+                env=environment, capture_output=True, text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn(token, result.stdout + result.stderr)
+            self.assertEqual(
+                env_path.read_text(encoding="utf-8"),
+                f"BOT_TOKEN={token}\nDATABASE_PATH=data/bot.sqlite3\nBACKUP_DIRECTORY=backups\n",
+            )
