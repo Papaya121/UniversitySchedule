@@ -15,7 +15,9 @@ from aiogram.exceptions import (
 
 from bot.database import Database
 from bot.error_reporter import ErrorReporter
-from bot.formatters import format_change, format_new_schedule_period, format_schedule
+from bot.formatters import (
+    format_change, format_new_schedule_period, format_schedule, format_shared_groups,
+)
 from bot.models import DaySchedule
 from bot.schedule_client import ScheduleClient
 
@@ -141,12 +143,22 @@ class ScheduleService:
         )
         return hashlib.sha256(value.encode()).hexdigest()
 
-    async def check_changes(self) -> None:
+    @staticmethod
+    def legacy_fingerprint(schedule: DaySchedule) -> str:
+        value = json.dumps(
+            [lesson.legacy_fingerprint() for lesson in schedule.lessons],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(value.encode()).hexdigest()
+
+    async def check_changes(self, notify: bool = True) -> None:
         """Compare a 14-day window and notify only affected subgroups."""
         try:
             now = datetime.now(self.timezone)
             for group_name in await self.db.active_groups():
                 try:
+                    previous_cache = await self.db.load_schedule_cache(group_name)
                     schedules = await self.schedules(group_name, force=True)
                 except SuspiciousEmptyScheduleError:
                     continue
@@ -156,6 +168,7 @@ class ScheduleService:
                     )
                     continue
                 established_schedule = await self.db.has_snapshots(group_name)
+                migration_pending = not await self.db.fingerprint_v2_ready(group_name)
                 newly_added: dict[int, list[date]] = {1: [], 2: []}
                 for day in sorted(x for x in schedules if x >= now.date()):
                     for subgroup in (1, 2):
@@ -168,6 +181,11 @@ class ScheduleService:
                         await self.db.save_snapshot(
                             group_name, day, subgroup, fingerprint, lesson_count
                         )
+                        # Rebaseline once after upgrading the fingerprint format.
+                        # A deployment must never notify every subscriber about
+                        # representation-only differences in cached lessons.
+                        if migration_pending or not notify:
+                            continue
                         # The first observation is a baseline, not a change.
                         if previous is None:
                             if established_schedule and lesson_count > 0:
@@ -175,13 +193,26 @@ class ScheduleService:
                             continue
                         if previous["lesson_count"] == 0 and lesson_count > 0:
                             newly_added[subgroup].append(day)
-                        elif previous["fingerprint"] != fingerprint:
-                            await self.broadcast(group_name, subgroup, format_change(filtered))
+                        else:
+                            prior = previous_cache.get(day)
+                            prior_filtered = prior.for_subgroup(subgroup) if prior else None
+                            same_content_in_cache = (
+                                prior_filtered is not None
+                                and previous["fingerprint"] == self.legacy_fingerprint(prior_filtered)
+                                and self.fingerprint(prior_filtered) == fingerprint
+                            )
+                            if previous["fingerprint"] in (
+                                fingerprint, self.legacy_fingerprint(filtered)
+                            ) or same_content_in_cache:
+                                continue
+                            await self.broadcast_schedule_change(group_name, subgroup, filtered)
                 for subgroup, days in newly_added.items():
                     if days:
                         await self.broadcast(
                             group_name, subgroup, format_new_schedule_period(days)
                         )
+                if migration_pending:
+                    await self.db.mark_fingerprint_v2_ready(group_name)
         except Exception as error:
             await self.error_reporter.report("Проверка изменений расписания", error)
 
@@ -202,7 +233,9 @@ class ScheduleService:
                     continue
                 if await self.db.claim_delivery(user["chat_id"], "morning", today):
                     sent = await self.safe_send(
-                        user["chat_id"], "☀️ Доброе утро!\n\n" + format_schedule(schedule, "Сегодня")
+                        user["chat_id"], "☀️ Доброе утро!\n\n" + format_schedule(
+                            schedule, "Сегодня", bool(user["show_shared_groups"])
+                        )
                     )
                     if not sent:
                         await self.db.release_delivery(user["chat_id"], "morning", today)
@@ -227,7 +260,9 @@ class ScheduleService:
                     schedule = await self.for_day(user["group_name"], tomorrow, user["subgroup"])
                     sent = await self.safe_send(
                         user["chat_id"],
-                        "✨ Учебный день закончен!\n\n" + format_schedule(schedule, "Завтра"),
+                        "✨ Учебный день закончен!\n\n" + format_schedule(
+                            schedule, "Завтра", bool(user["show_shared_groups"])
+                        ),
                     )
                     if not sent:
                         await self.db.release_delivery(user["chat_id"], "tomorrow", today)
@@ -265,10 +300,11 @@ class ScheduleService:
                     f"Следующая в <b>{following.starts_at:%H:%M}</b>:\n"
                     f"<b>{html.escape(following.subject)}</b>"
                 )
-                if len(following.groups) > 1:
-                    message += "\n👥 " + ", ".join(
-                        html.escape(group) for group in following.groups
-                    )
+                group_text = format_shared_groups(
+                    following, bool(user["show_shared_groups"])
+                )
+                if group_text:
+                    message += "\n" + group_text
                 details = []
                 if following.room:
                     details.append(f"📍 {html.escape(following.room)}")
@@ -305,10 +341,11 @@ class ScheduleService:
                         f"<b>{lesson.starts_at:%H:%M}–{lesson.ends_at:%H:%M}</b>  "
                         f"{html.escape(lesson.subject)}"
                     )
-                    if len(lesson.groups) > 1:
-                        message += "\n👥 " + ", ".join(
-                            html.escape(group) for group in lesson.groups
-                        )
+                    group_text = format_shared_groups(
+                        lesson, bool(user["show_shared_groups"])
+                    )
+                    if group_text:
+                        message += "\n" + group_text
                     details = []
                     if lesson.room:
                         details.append(f"📍 {html.escape(lesson.room)}")
@@ -328,6 +365,15 @@ class ScheduleService:
     async def broadcast(self, group_name: str, subgroup: int, text: str) -> None:
         for user in await self.db.active_users(subgroup, group_name):
             await self.safe_send(user["chat_id"], text)
+
+    async def broadcast_schedule_change(
+        self, group_name: str, subgroup: int, schedule: DaySchedule
+    ) -> None:
+        for user in await self.db.active_users(subgroup, group_name):
+            await self.safe_send(
+                user["chat_id"],
+                format_change(schedule, bool(user["show_shared_groups"])),
+            )
 
     async def safe_send(self, chat_id: int, text: str) -> bool:
         try:

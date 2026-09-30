@@ -19,6 +19,7 @@ class UserExportTest(unittest.TestCase):
             "next_lesson_notifications": 0,
             "lesson_start_notifications": 1,
             "daily_schedule_notifications": 0,
+            "show_shared_groups": 1,
             "created_at": "2026-09-01T10:00:00",
             "updated_at": "2026-09-22T12:00:00",
         }
@@ -37,10 +38,11 @@ class UserExportTest(unittest.TestCase):
         self.assertEqual(worksheet["D2"].value, "ИС2-261-ОБ")
         self.assertEqual(worksheet["H2"].value, 1)
         self.assertEqual(worksheet["I2"].value, 0)
-        self.assertEqual(worksheet["J2"].value, datetime(2026, 9, 1, 10, 0))
-        self.assertEqual(worksheet["K2"].value, datetime(2026, 9, 22, 12, 0))
+        self.assertEqual(worksheet["J2"].value, 1)
+        self.assertEqual(worksheet["K2"].value, datetime(2026, 9, 1, 10, 0))
+        self.assertEqual(worksheet["L2"].value, datetime(2026, 9, 22, 12, 0))
         self.assertEqual(worksheet.freeze_panes, "A2")
-        self.assertEqual(worksheet.auto_filter.ref, "A1:K2")
+        self.assertEqual(worksheet.auto_filter.ref, "A1:L2")
         self.assertTrue(worksheet["A1"].font.bold)
         workbook.close()
 

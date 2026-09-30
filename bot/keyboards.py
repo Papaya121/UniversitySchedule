@@ -38,11 +38,12 @@ def week_keyboard(weeks: list[date], labels: list[str]) -> InlineKeyboardMarkup:
 
 def settings_keyboard(
     next_lesson_enabled: bool, lesson_start_enabled: bool,
-    daily_schedule_enabled: bool,
+    daily_schedule_enabled: bool, show_shared_groups: bool,
 ) -> InlineKeyboardMarkup:
     next_status = "✅ Включены" if next_lesson_enabled else "❌ Выключены"
     start_status = "✅ Включены" if lesson_start_enabled else "❌ Выключены"
     daily_status = "✅ Включена" if daily_schedule_enabled else "❌ Выключена"
+    groups_status = "✅ Включено" if show_shared_groups else "❌ Выключено"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
             text=f"Следующая пара: {next_status}",
@@ -55,6 +56,10 @@ def settings_keyboard(
         [InlineKeyboardButton(
             text=f"Утро и конец дня: {daily_status}",
             callback_data="notifications:daily:toggle",
+        )],
+        [InlineKeyboardButton(
+            text=f"Группы на общих парах: {groups_status}",
+            callback_data="settings:groups:toggle",
         )],
         [InlineKeyboardButton(text="🎓 Сменить группу", callback_data="settings:group")],
     ])

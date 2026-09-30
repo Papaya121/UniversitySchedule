@@ -1,4 +1,5 @@
 import asyncio
+import fcntl
 import logging
 from datetime import datetime, time
 
@@ -18,8 +19,8 @@ from bot.schedule_client import ScheduleClient
 from bot.service import ScheduleService
 
 
-async def main() -> None:
-    settings = Settings()
+async def main(settings: Settings | None = None) -> None:
+    settings = settings or Settings()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -145,7 +146,8 @@ async def main() -> None:
             await reporter.report(f"Настройка меню администратора {admin_id}", error)
     scheduler.start()
     await create_backup()
-    await service.check_changes()
+    # Refresh the baseline on startup without sending change alerts from a deploy.
+    await service.check_changes(notify=False)
     now = datetime.now(settings.tz)
     # Catch up after a restart; SQLite prevents a duplicate delivery.
     if now.time() < time(min(23, settings.morning_hour + 3), 0):
@@ -160,4 +162,13 @@ async def main() -> None:
 
 
 def run() -> None:
-    asyncio.run(main())
+    settings = Settings()
+    settings.database_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = settings.database_path.parent / "bot-instance.lock"
+    with lock_path.open("a+b") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            logging.error("Another schedule bot instance is already running")
+            return
+        asyncio.run(main(settings))

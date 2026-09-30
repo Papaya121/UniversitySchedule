@@ -178,6 +178,7 @@ class ScheduleProtectionTest(unittest.IsolatedAsyncioTestCase):
                     group, day, subgroup, empty_fingerprint, 0
                 )
         service = self.make_service(schedules)
+        await self.db.mark_fingerprint_v2_ready(group)
 
         await service.check_changes()
 
@@ -205,12 +206,110 @@ class ScheduleProtectionTest(unittest.IsolatedAsyncioTestCase):
                 1,
             )
         service = self.make_service({self.today: new_schedule})
+        await self.db.mark_fingerprint_v2_ready(group)
 
         await service.check_changes()
 
         self.assertEqual(len(self.bot.messages), 1)
         self.assertIn("Расписание изменилось", self.bot.messages[0][1])
         self.assertIn("Новый предмет", self.bot.messages[0][1])
+
+    async def test_old_group_fingerprints_do_not_broadcast_on_deploy(self) -> None:
+        group = "ИС2-261-ОБ"
+        for chat_id, subgroup in ((42, 1), (43, 2)):
+            await self.db.upsert_user(chat_id, group, subgroup, "Студент", None)
+        shared = DaySchedule(self.today, (
+            Lesson(
+                time(8), time(9, 30), "Лекция", None, "101", "Преподаватель",
+                (group, "ИС2-262-ОБ", "ИС2-263-ОБ"),
+            ),
+        ))
+        legacy = ScheduleService.legacy_fingerprint(shared)
+        for subgroup in (1, 2):
+            await self.db.save_snapshot(group, self.today, subgroup, legacy, 1)
+        service = self.make_service({self.today: shared})
+
+        await service.check_changes()
+
+        self.assertEqual(self.bot.messages, [])
+        for subgroup in (1, 2):
+            self.assertEqual(
+                await self.db.snapshot(group, self.today, subgroup),
+                ScheduleService.fingerprint(shared),
+            )
+
+    async def test_group_list_change_does_not_broadcast(self) -> None:
+        group = "ИС2-261-ОБ"
+        await self.db.upsert_user(42, group, 1, "Студент", None)
+        old = DaySchedule(self.today, (
+            Lesson(time(8), time(9, 30), "Лекция", None, groups=(group, "ИС2-262-ОБ")),
+        ))
+        current = DaySchedule(self.today, (
+            Lesson(time(8), time(9, 30), "Лекция", None, groups=(group, "ИС2-263-ОБ")),
+        ))
+        await self.db.save_snapshot(
+            group, self.today, 1, ScheduleService.legacy_fingerprint(old), 1
+        )
+        await self.db.save_schedule_cache(group, {self.today: old})
+        service = self.make_service({self.today: current})
+        await self.db.mark_fingerprint_v2_ready(group)
+
+        await service.check_changes()
+
+        self.assertEqual(self.bot.messages, [])
+        self.assertEqual(
+            await self.db.snapshot(group, self.today, 1),
+            ScheduleService.fingerprint(current),
+        )
+
+    async def test_first_v2_check_is_quiet_then_real_changes_notify(self) -> None:
+        group = "ИС2-261-ОБ"
+        await self.db.upsert_user(42, group, 1, "Студент", None)
+        old = DaySchedule(self.today, (
+            Lesson(time(8), time(9, 30), "Старый предмет", None),
+        ))
+        current = DaySchedule(self.today, (
+            Lesson(time(8), time(9, 30), "Новый предмет", None),
+        ))
+        await self.db.save_snapshot(
+            group, self.today, 1, ScheduleService.fingerprint(old), 1
+        )
+        service = self.make_service({self.today: current})
+
+        await service.check_changes()
+
+        self.assertEqual(self.bot.messages, [])
+        self.assertTrue(await self.db.fingerprint_v2_ready(group))
+        newer = DaySchedule(self.today, (
+            Lesson(time(8), time(9, 30), "Совсем новый предмет", None),
+        ))
+        service.client.schedules = {self.today: newer}
+
+        await service.check_changes()
+
+        self.assertEqual(len(self.bot.messages), 1)
+        self.assertIn("Совсем новый предмет", self.bot.messages[0][1])
+
+    async def test_restart_rebaselines_without_broadcasting(self) -> None:
+        group = "ИС2-261-ОБ"
+        await self.db.upsert_user(42, group, 1, "Студент", None)
+        await self.db.mark_fingerprint_v2_ready(group)
+        old = DaySchedule(self.today, (
+            Lesson(time(8), time(9, 30), "До перезапуска", None),
+        ))
+        current = DaySchedule(self.today, (
+            Lesson(time(8), time(9, 30), "После перезапуска", None),
+        ))
+        await self.db.save_snapshot(group, self.today, 1, ScheduleService.fingerprint(old), 1)
+        service = self.make_service({self.today: current})
+
+        await service.check_changes(notify=False)
+
+        self.assertEqual(self.bot.messages, [])
+        self.assertEqual(
+            await self.db.snapshot(group, self.today, 1),
+            ScheduleService.fingerprint(current),
+        )
 
 
 class MorningDeliveryAdditionalTest(unittest.TestCase):

@@ -103,6 +103,13 @@ class DatabaseTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.db.get_user(42))["daily_schedule_notifications"], 0)
         self.assertTrue(await self.db.toggle_daily_schedule_notifications(42))
 
+    async def test_shared_groups_display_default_on_and_toggle(self) -> None:
+        await self.db.upsert_user(42, "ИС2-261-ОБ", 1, "Иван", "ivan")
+        self.assertEqual((await self.db.get_user(42))["show_shared_groups"], 1)
+        self.assertFalse(await self.db.toggle_show_shared_groups(42))
+        self.assertEqual((await self.db.get_user(42))["show_shared_groups"], 0)
+        self.assertTrue(await self.db.toggle_show_shared_groups(42))
+
     async def test_updates_suggested_group(self) -> None:
         self.assertEqual(await self.db.suggested_group(), "ИС2-261-ОБ")
         await self.db.set_suggested_group("ПИ-101")
@@ -180,6 +187,7 @@ class LegacyDatabaseMigrationTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(user["menu_version"], 0)
             self.assertEqual(user["lesson_start_notifications"], 0)
             self.assertEqual(user["daily_schedule_notifications"], 1)
+            self.assertEqual(user["show_shared_groups"], 1)
             self.assertEqual(
                 await database.snapshot("ИС2-261-ОБ", date(2026, 9, 4), 2), "abc"
             )

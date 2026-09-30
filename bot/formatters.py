@@ -1,7 +1,7 @@
 import html
 from datetime import date
 
-from bot.models import DaySchedule
+from bot.models import DaySchedule, Lesson
 
 MONTHS = (
     "", "января", "февраля", "марта", "апреля", "мая", "июня",
@@ -16,7 +16,18 @@ def human_date(day: date) -> str:
     return f"{day.day} {MONTHS[day.month]}, {WEEKDAYS[day.weekday()]}"
 
 
-def format_schedule(schedule: DaySchedule, title: str | None = None) -> str:
+def format_shared_groups(lesson: Lesson, show_shared_groups: bool = True) -> str:
+    if not show_shared_groups or len(lesson.groups) <= 1:
+        return ""
+    return "👥 Группы:\n" + "\n".join(
+        f"• {html.escape(group)}" for group in lesson.groups
+    )
+
+
+def format_schedule(
+    schedule: DaySchedule, title: str | None = None,
+    show_shared_groups: bool = True,
+) -> str:
     heading = title or "Расписание"
     lines = [f"<b>{html.escape(heading)}</b>", f"<i>{human_date(schedule.day)}</i>", ""]
     if not schedule.lessons:
@@ -26,8 +37,9 @@ def format_schedule(schedule: DaySchedule, title: str | None = None) -> str:
     for index, lesson in enumerate(schedule.lessons, start=1):
         time_range = f"{lesson.starts_at:%H:%M}–{lesson.ends_at:%H:%M}"
         lines.append(f"<b>{index}. {time_range}</b>  {html.escape(lesson.subject)}")
-        if len(lesson.groups) > 1:
-            lines.append("👥 " + ", ".join(html.escape(group) for group in lesson.groups))
+        group_text = format_shared_groups(lesson, show_shared_groups)
+        if group_text:
+            lines.append(group_text)
         details: list[str] = []
         if lesson.room:
             details.append(f"📍 {html.escape(lesson.room)}")
@@ -40,8 +52,10 @@ def format_schedule(schedule: DaySchedule, title: str | None = None) -> str:
     return "\n".join(lines)
 
 
-def format_change(schedule: DaySchedule) -> str:
-    return "🔔 <b>Расписание изменилось</b>\n\n" + format_schedule(schedule, "Актуальная версия")
+def format_change(schedule: DaySchedule, show_shared_groups: bool = True) -> str:
+    return "🔔 <b>Расписание изменилось</b>\n\n" + format_schedule(
+        schedule, "Актуальная версия", show_shared_groups
+    )
 
 
 def format_new_schedule_period(days: list[date]) -> str:

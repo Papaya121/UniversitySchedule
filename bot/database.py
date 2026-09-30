@@ -33,6 +33,7 @@ class Database:
                     next_lesson_notifications INTEGER NOT NULL DEFAULT 1,
                     lesson_start_notifications INTEGER NOT NULL DEFAULT 0,
                     daily_schedule_notifications INTEGER NOT NULL DEFAULT 1,
+                    show_shared_groups INTEGER NOT NULL DEFAULT 1,
                     menu_version INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -109,6 +110,11 @@ class Database:
             if "daily_schedule_notifications" not in columns:
                 self._connection.execute(
                     "ALTER TABLE users ADD COLUMN daily_schedule_notifications "
+                    "INTEGER NOT NULL DEFAULT 1"
+                )
+            if "show_shared_groups" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE users ADD COLUMN show_shared_groups "
                     "INTEGER NOT NULL DEFAULT 1"
                 )
             if "menu_version" not in columns:
@@ -369,6 +375,20 @@ class Database:
             self._connection.commit()
             return bool(row and row["daily_schedule_notifications"])
 
+    async def toggle_show_shared_groups(self, chat_id: int) -> bool:
+        async with self._lock:
+            self._connection.execute("""
+                UPDATE users
+                SET show_shared_groups = CASE show_shared_groups WHEN 1 THEN 0 ELSE 1 END,
+                    updated_at = ?
+                WHERE chat_id = ?
+            """, (datetime.now().isoformat(timespec="seconds"), chat_id))
+            row = self._connection.execute(
+                "SELECT show_shared_groups FROM users WHERE chat_id = ?", (chat_id,)
+            ).fetchone()
+            self._connection.commit()
+            return bool(row and row["show_shared_groups"])
+
     async def record_error(self, context: str, error: BaseException) -> None:
         async with self._lock:
             self._connection.execute("""
@@ -446,6 +466,22 @@ class Database:
     async def snapshot(self, group_name: str, day: date, subgroup: int) -> str | None:
         row = await self.snapshot_record(group_name, day, subgroup)
         return row["fingerprint"] if row else None
+
+    async def fingerprint_v2_ready(self, group_name: str) -> bool:
+        async with self._lock:
+            row = self._connection.execute(
+                "SELECT 1 FROM bot_settings WHERE key = ?",
+                (f"fingerprint_v2:{group_name}",),
+            ).fetchone()
+            return row is not None
+
+    async def mark_fingerprint_v2_ready(self, group_name: str) -> None:
+        async with self._lock:
+            self._connection.execute(
+                "INSERT OR IGNORE INTO bot_settings(key, value) VALUES (?, '1')",
+                (f"fingerprint_v2:{group_name}",),
+            )
+            self._connection.commit()
 
     async def snapshot_record(
         self, group_name: str, day: date, subgroup: int

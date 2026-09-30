@@ -13,6 +13,9 @@ if [[ ! -f "${APP_DIR}/.env" ]]; then
   exit 1
 fi
 
+# Fail before touching the service if Actions did not provide the new token.
+python3 "${SOURCE_DIR}/deploy/sync_token.py" "${APP_DIR}/.env"
+
 if [[ -f "${DATABASE_PATH}" ]]; then
   mkdir -p "${DEPLOY_BACKUP_DIR}"
   BACKUP_PATH="${DEPLOY_BACKUP_DIR}/bot-$(date +%Y%m%d-%H%M%S).sqlite3"
@@ -59,8 +62,31 @@ install -m 0644 \
   "${SERVICE_DIR}/${SERVICE_NAME}"
 
 systemctl --user daemon-reload
+systemctl --user stop "${SERVICE_NAME}" || true
+# Stop the legacy Compose service before starting the managed systemd service.
+if command -v docker >/dev/null 2>&1; then
+  LEGACY_CONTAINERS="$(docker ps -q --filter 'label=com.docker.compose.service=schedule-bot' 2>/dev/null || true)"
+  if [[ -n "${LEGACY_CONTAINERS}" ]]; then
+    docker update --restart=no ${LEGACY_CONTAINERS}
+    docker stop ${LEGACY_CONTAINERS}
+  fi
+fi
+sleep 2
+mapfile -t REMAINING_BOTS < <(pgrep -f '[p]ython.*-m bot' || true)
+if (( ${#REMAINING_BOTS[@]} > 0 )); then
+  echo "Deployment stopped: another bot process is still running" >&2
+  exit 1
+fi
 systemctl --user enable "${SERVICE_NAME}"
-systemctl --user restart "${SERVICE_NAME}"
+systemctl --user start "${SERVICE_NAME}"
+sleep 5
 systemctl --user is-active --quiet "${SERVICE_NAME}"
+MAIN_PID="$(systemctl --user show -P MainPID "${SERVICE_NAME}")"
+mapfile -t RUNNING_BOTS < <(pgrep -f '[p]ython.*-m bot' || true)
+if (( ${#RUNNING_BOTS[@]} != 1 )) || [[ "${RUNNING_BOTS[0]}" != "${MAIN_PID}" ]]; then
+  systemctl --user stop "${SERVICE_NAME}"
+  echo "Deployment stopped: expected exactly one bot process" >&2
+  exit 1
+fi
 
 echo "Deployment completed successfully"

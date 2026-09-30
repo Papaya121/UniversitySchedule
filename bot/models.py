@@ -13,7 +13,7 @@ class Lesson:
     groups: tuple[str, ...] = ()
 
     def fingerprint(self) -> tuple[str, ...]:
-        value = (
+        return (
             self.starts_at.isoformat(timespec="minutes"),
             self.ends_at.isoformat(timespec="minutes"),
             self.subject,
@@ -21,6 +21,9 @@ class Lesson:
             self.room or "",
             self.teacher or "",
         )
+
+    def legacy_fingerprint(self) -> tuple[str, ...]:
+        value = self.fingerprint()
         return value + self.groups if len(self.groups) > 1 else value
 
 

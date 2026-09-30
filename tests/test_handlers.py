@@ -60,12 +60,14 @@ class WeekSelectionTest(unittest.TestCase):
 
 class SettingsKeyboardTest(unittest.TestCase):
     def test_lesson_start_toggle_is_in_settings(self) -> None:
-        keyboard = settings_keyboard(True, False, True)
+        keyboard = settings_keyboard(True, False, True, True)
         buttons = [button for row in keyboard.inline_keyboard for button in row]
         start = next(button for button in buttons if button.callback_data == "notifications:start:toggle")
         self.assertIn("Выключены", start.text)
         daily = next(button for button in buttons if button.callback_data == "notifications:daily:toggle")
         self.assertIn("Включена", daily.text)
+        groups = next(button for button in buttons if button.callback_data == "settings:groups:toggle")
+        self.assertIn("Включено", groups.text)
         self.assertFalse(any(button.callback_data.startswith("subgroup:") for button in buttons))
 
 

@@ -63,8 +63,14 @@ class ParseScheduleTest(unittest.TestCase):
     def test_displays_groups_only_for_shared_lesson(self) -> None:
         schedule = parse_schedule_html(HTML)[date(2026, 9, 4)]
         text = format_schedule(schedule.for_subgroup(1))
-        self.assertIn("👥 ИС2-261-ОБ, ИС2-262-ОБ, ИС2-263-ОБ", text)
+        self.assertIn(
+            "👥 Группы:\n• ИС2-261-ОБ\n• ИС2-262-ОБ\n• ИС2-263-ОБ",
+            text,
+        )
         self.assertEqual(text.count("👥"), 1)
+        hidden = format_schedule(schedule.for_subgroup(1), show_shared_groups=False)
+        self.assertNotIn("👥", hidden)
+        self.assertNotIn("ИС2-262-ОБ", hidden)
 
 
 if __name__ == "__main__":

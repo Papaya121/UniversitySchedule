@@ -125,6 +125,14 @@ def build_router(
             await message.answer("Сначала создай профиль командой /start 👇")
         return user
 
+    def user_settings_keyboard(user) -> Any:
+        return settings_keyboard(
+            bool(user["next_lesson_notifications"]),
+            bool(user["lesson_start_notifications"]),
+            bool(user["daily_schedule_notifications"]),
+            bool(user["show_shared_groups"]),
+        )
+
     async def accept_group(message: Message, state: FSMContext, raw_group: str) -> None:
         group_name = normalize_group(raw_group)
         if not 2 <= len(group_name) <= 40:
@@ -285,7 +293,9 @@ def build_router(
         day = datetime.now(service.timezone).date() + timedelta(days=offset)
         try:
             schedule = await service.for_day(user["group_name"], day, user["subgroup"])
-            await message.answer(format_schedule(schedule, title))
+            await message.answer(format_schedule(
+                schedule, title, bool(user["show_shared_groups"])
+            ))
         except Exception as error:
             await reporter.report("Показ расписания на день", error)
             await message.answer("Не получилось связаться с сайтом расписания. Попробуй чуть позже 🙌")
@@ -337,7 +347,10 @@ def build_router(
                 )
             else:
                 await message.answer(
-                    format_schedule(schedule.for_subgroup(user["subgroup"]))
+                    format_schedule(
+                        schedule.for_subgroup(user["subgroup"]),
+                        show_shared_groups=bool(user["show_shared_groups"]),
+                    )
                 )
 
     @router.callback_query(F.data.startswith("week:"))
@@ -370,14 +383,11 @@ def build_router(
         if not user:
             await ask_group(message, state, "onboarding")
             return
-        enabled = bool(user["next_lesson_notifications"])
-        start_enabled = bool(user["lesson_start_notifications"])
-        daily_enabled = bool(user["daily_schedule_notifications"])
         await message.answer(
             f"Группа: <b>{html.escape(user['group_name'])}</b>\n"
             f"Подгруппа: <b>{user['subgroup']}</b>\n\n"
             "Здесь можно изменить профиль и уведомления:",
-            reply_markup=settings_keyboard(enabled, start_enabled, daily_enabled),
+            reply_markup=user_settings_keyboard(user),
         )
 
     @router.callback_query(F.data == "settings:group")
@@ -394,10 +404,9 @@ def build_router(
         enabled = await db.toggle_next_lesson_notifications(callback.message.chat.id)
         status = "включены ✅" if enabled else "выключены ❌"
         await callback.answer(f"Уведомления {status}")
-        await callback.message.edit_reply_markup(reply_markup=settings_keyboard(
-            enabled, bool(user["lesson_start_notifications"]),
-            bool(user["daily_schedule_notifications"]),
-        ))
+        await callback.message.edit_reply_markup(
+            reply_markup=user_settings_keyboard(await db.get_user(callback.message.chat.id))
+        )
 
     @router.callback_query(F.data == "notifications:start:toggle")
     async def toggle_start_notifications(callback: CallbackQuery) -> None:
@@ -408,10 +417,9 @@ def build_router(
         enabled = await db.toggle_lesson_start_notifications(callback.message.chat.id)
         status = "включены ✅" if enabled else "выключены ❌"
         await callback.answer(f"Уведомления о начале пары {status}")
-        await callback.message.edit_reply_markup(reply_markup=settings_keyboard(
-            bool(user["next_lesson_notifications"]), enabled,
-            bool(user["daily_schedule_notifications"]),
-        ))
+        await callback.message.edit_reply_markup(
+            reply_markup=user_settings_keyboard(await db.get_user(callback.message.chat.id))
+        )
 
     @router.callback_query(F.data == "notifications:daily:toggle")
     async def toggle_daily_notifications(callback: CallbackQuery) -> None:
@@ -422,10 +430,24 @@ def build_router(
         enabled = await db.toggle_daily_schedule_notifications(callback.message.chat.id)
         status = "включена ✅" if enabled else "выключена ❌"
         await callback.answer(f"Рассылка утром и в конце дня {status}")
-        await callback.message.edit_reply_markup(reply_markup=settings_keyboard(
-            bool(user["next_lesson_notifications"]),
-            bool(user["lesson_start_notifications"]), enabled,
-        ))
+        await callback.message.edit_reply_markup(
+            reply_markup=user_settings_keyboard(await db.get_user(callback.message.chat.id))
+        )
+
+    @router.callback_query(F.data == "settings:groups:toggle")
+    async def toggle_shared_groups(callback: CallbackQuery) -> None:
+        user = await db.get_user(callback.message.chat.id)
+        if not user:
+            await callback.answer("Сначала создай профиль через /start", show_alert=True)
+            return
+        enabled = await db.toggle_show_shared_groups(callback.message.chat.id)
+        await callback.answer(
+            "Группы на общих парах показываются" if enabled
+            else "Группы на общих парах скрыты"
+        )
+        await callback.message.edit_reply_markup(
+            reply_markup=user_settings_keyboard(await db.get_user(callback.message.chat.id))
+        )
 
     @router.message(Command("donate"))
     @router.message(F.text == "❤️ Поддержать разработчика")
