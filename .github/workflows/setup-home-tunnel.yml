@@ -1,0 +1,45 @@
+name: Configure home SSH tunnel
+
+on:
+  push:
+    branches:
+      - dev
+    paths:
+      - .github/workflows/setup-home-tunnel.yml
+      - deploy/home-reverse-tunnel.service
+
+permissions:
+  contents: read
+
+concurrency:
+  group: university-schedule-home-tunnel
+  cancel-in-progress: false
+
+jobs:
+  configure:
+    if: github.repository == 'Papaya121/UniversitySchedule'
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - university-schedule
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install reverse tunnel as a separate user service
+        run: |
+          set -Eeuo pipefail
+          install -d -m 0700 "$HOME/.ssh"
+          if [[ ! -f "$HOME/.ssh/home-reverse-tunnel" ]]; then
+            ssh-keygen -q -t ed25519 -N '' -f "$HOME/.ssh/home-reverse-tunnel" -C home-reverse-tunnel
+          fi
+          install -d -m 0755 "$HOME/.config/systemd/user"
+          install -m 0644 deploy/home-reverse-tunnel.service "$HOME/.config/systemd/user/home-reverse-tunnel.service"
+          systemctl --user daemon-reload
+          systemctl --user enable --now home-reverse-tunnel.service
+          echo 'Add this PUBLIC key to german2 authorized_keys for the reverse tunnel:'
+          cat "$HOME/.ssh/home-reverse-tunnel.pub"
+          echo 'The service will retry until the public key is authorized.'
