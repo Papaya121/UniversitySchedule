@@ -1,4 +1,4 @@
-name: Test and deploy
+name: Emergency stop schedule bot
 
 on:
   push:
@@ -14,30 +14,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  test-and-deploy:
+  emergency-stop:
     if: github.repository == 'Papaya121/UniversitySchedule'
     runs-on:
       - self-hosted
       - Linux
       - X64
       - university-schedule
-    timeout-minutes: 15
-
+    timeout-minutes: 5
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: Create test environment
+      - name: Stop all known production bot instances
+        shell: bash
         run: |
-          python3 -m venv .ci-venv
-          .ci-venv/bin/python -m pip install --disable-pip-version-check -r requirements.txt
-
-      - name: Run tests
-        run: .ci-venv/bin/python -m unittest discover -s tests -v
-
-      - name: Deploy
-        env:
-          APP_DIR: /home/papaya/UniversitySchedule
-        run: bash deploy/deploy.sh
+          set -Eeuo pipefail
+          systemctl --user disable --now university-schedule.service || true
+          if command -v docker >/dev/null 2>&1; then
+            containers=$(docker ps -q --filter 'label=com.docker.compose.service=schedule-bot' 2>/dev/null || true)
+            if [[ -n "$containers" ]]; then
+              docker stop $containers
+            fi
+          fi
+          for pid in $(pgrep -f '[p]ython.*-m bot' || true); do
+            cwd=$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)
+            if [[ "$cwd" == "/home/papaya/UniversitySchedule" ]]; then
+              kill "$pid" || true
+            fi
+          done
+          echo "systemd status:"
+          systemctl --user is-active university-schedule.service || true
+          echo "remaining bot processes:"
+          pgrep -af '[p]ython.*-m bot' || true
+          echo "remaining schedule-bot containers:"
+          if command -v docker >/dev/null 2>&1; then
+            docker ps --filter 'label=com.docker.compose.service=schedule-bot' --format '{{.Names}} {{.Status}}' || true
+          fi
