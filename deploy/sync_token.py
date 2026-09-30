@@ -30,12 +30,16 @@ def sync_token(env_path: Path, token: str, token_name: str = "TELEGRAM_BOT_TOKEN
         updated.insert(0, f"BOT_TOKEN={token}")
 
     if token_name == "TELEGRAM_BOT_TOKEN_DEV":
-        # Never let a copied dev .env point at the production users or backups.
+        # Keep dev storage separate and set its administrator on every deploy.
         updated = [
             line for line in updated
-            if not re.match(r"^\s*(DATABASE_PATH|BACKUP_DIRECTORY)\s*=", line)
+            if not re.match(r"^\s*(DATABASE_PATH|BACKUP_DIRECTORY|ADMIN_IDS)\s*=", line)
         ]
-        updated.extend(["DATABASE_PATH=data/bot.sqlite3", "BACKUP_DIRECTORY=backups"])
+        updated.extend([
+            "DATABASE_PATH=data/bot.sqlite3",
+            "BACKUP_DIRECTORY=backups",
+            "ADMIN_IDS=959026123",
+        ])
 
     fd, temporary = tempfile.mkstemp(prefix=".env.", dir=env_path.parent)
     try:
