@@ -1,0 +1,13 @@
+[Unit]
+Description=Reverse SSH tunnel to german2 for ssh home
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ssh -N -T -i %h/.ssh/home-reverse-tunnel -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -R 127.0.0.1:2222:127.0.0.1:22 root@193.221.202.120
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
