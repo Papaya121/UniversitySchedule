@@ -1,4 +1,4 @@
-name: Emergency stop schedule bot
+name: Emergency inspect and stop schedule bot
 
 on:
   push:
@@ -23,28 +23,30 @@ jobs:
       - university-schedule
     timeout-minutes: 5
     steps:
-      - name: Stop all known production bot instances
+      - name: Stop production bot processes
         shell: bash
         run: |
           set -Eeuo pipefail
           systemctl --user disable --now university-schedule.service || true
+          echo "Bot process details before stop:"
+          for pid in $(pgrep -f '[p]ython.*-m bot' || true); do
+            cwd=$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)
+            root=$(readlink -f "/proc/$pid/root" 2>/dev/null || true)
+            echo "pid=$pid cwd=$cwd root=$root"
+            if [[ "$cwd" == *UniversitySchedule* || "$cwd" == "/app" ]]; then
+              kill "$pid" || true
+              echo "stopped pid=$pid"
+            fi
+          done
           if command -v docker >/dev/null 2>&1; then
+            echo "Docker containers:"
+            docker ps --format '{{.ID}} {{.Names}} {{.Image}} {{.Status}}' || true
             containers=$(docker ps -q --filter 'label=com.docker.compose.service=schedule-bot' 2>/dev/null || true)
             if [[ -n "$containers" ]]; then
               docker stop $containers
             fi
           fi
-          for pid in $(pgrep -f '[p]ython.*-m bot' || true); do
-            cwd=$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)
-            if [[ "$cwd" == "/home/papaya/UniversitySchedule" ]]; then
-              kill "$pid" || true
-            fi
-          done
           echo "systemd status:"
           systemctl --user is-active university-schedule.service || true
           echo "remaining bot processes:"
           pgrep -af '[p]ython.*-m bot' || true
-          echo "remaining schedule-bot containers:"
-          if command -v docker >/dev/null 2>&1; then
-            docker ps --filter 'label=com.docker.compose.service=schedule-bot' --format '{{.Names}} {{.Status}}' || true
-          fi
