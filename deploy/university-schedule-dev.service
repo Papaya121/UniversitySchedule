@@ -1,0 +1,18 @@
+[Unit]
+Description=VGLTU Telegram schedule bot (development)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/papaya/UniversitySchedule-dev
+EnvironmentFile=/home/papaya/UniversitySchedule-dev/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=BOT_SERVICE_NAME=university-schedule-dev.service
+ExecStart=/home/papaya/UniversitySchedule-dev/.venv/bin/python -m bot
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

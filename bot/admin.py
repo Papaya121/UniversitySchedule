@@ -1,6 +1,8 @@
 import asyncio
 import html
+import os
 from datetime import datetime
+from pathlib import Path
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import (
@@ -19,6 +21,8 @@ from bot.error_reporter import ErrorReporter
 from bot.error_reporter import is_message_not_modified
 from bot.keyboards import (
     admin_keyboard,
+    admin_confirm_keyboard,
+    admin_controls_keyboard,
     broadcast_audience_keyboard,
     broadcast_confirmation_keyboard,
 )
@@ -29,6 +33,25 @@ class AdminBroadcast(StatesGroup):
     choosing_audience = State()
     waiting_for_message = State()
     waiting_for_confirmation = State()
+
+
+class AdminControl(StatesGroup):
+    maintenance_confirm = State()
+    shutdown_first = State()
+    shutdown_second = State()
+    shutdown_phrase = State()
+
+
+def managed_service_name() -> str | None:
+    service_name = os.environ.get("BOT_SERVICE_NAME")
+    directories = {
+        "university-schedule.service": Path("/home/papaya/UniversitySchedule"),
+        "university-schedule-dev.service": Path("/home/papaya/UniversitySchedule-dev"),
+    }
+    expected = directories.get(service_name)
+    if expected is None or Path.cwd().resolve() != expected.resolve():
+        return None
+    return service_name
 
 
 def build_admin_router(
@@ -51,6 +74,7 @@ def build_admin_router(
         if len(groups) > 20:
             group_lines += f"\n• …ещё {len(groups) - 20} групп"
         subgroup_counts = dict(stats["subgroups"])
+        mode = await db.access_mode()
         return (
             "👑 <b>Панель администратора</b>\n\n"
             f"👥 Всего профилей: <b>{stats['total']}</b>\n"
@@ -64,8 +88,9 @@ def build_admin_router(
             f"🚨 Ошибок сегодня: <b>{stats['errors_today']}</b>\n"
             f"📣 Массовых рассылок: <b>{stats['broadcast_count']}</b> "
             f"({stats['broadcast_delivered']} доставлено)\n\n"
+            f"🛑 Режим: <b>{'Пауза для пользователей' if mode == 'maintenance' else 'Обычный'}</b>\n\n"
             f"<b>Группы:</b>\n{group_lines}"
-            f"\n\n<b>Версия 0.3.1</b>"
+            f"\n\n<b>Версия 0.3.2</b>"
         )
 
     @router.message(Command("myid"))
@@ -81,10 +106,11 @@ def build_admin_router(
         await message.answer(await statistics_text(), reply_markup=admin_keyboard())
 
     @router.callback_query(F.data == "admin:stats")
-    async def refresh_statistics(callback: CallbackQuery) -> None:
+    async def refresh_statistics(callback: CallbackQuery, state: FSMContext) -> None:
         if not is_admin(callback.from_user.id):
             await deny_callback(callback)
             return
+        await state.clear()
         try:
             await callback.message.edit_text(
                 await statistics_text(), reply_markup=admin_keyboard()
@@ -95,6 +121,146 @@ def build_admin_router(
                 await callback.answer("Статистика пока не изменилась")
                 return
             raise
+
+    async def show_controls(callback: CallbackQuery, state: FSMContext) -> None:
+        await state.clear()
+        maintenance = await db.access_mode() == "maintenance"
+        await callback.answer()
+        await callback.message.edit_text(
+            "🛑 <b>Отключения</b>\n\n"
+            f"Режим для пользователей: <b>{'приостановлен' if maintenance else 'обычный'}</b>\n\n"
+            "При паузе пользователи не получают автоматические уведомления и бот "
+            "не отвечает им. Админка и ручная рассылка работают.\n\n"
+            "Полное отключение останавливает и отключает systemd-сервис. "
+            "Восстановить его можно только вручную на сервере.",
+            reply_markup=admin_controls_keyboard(maintenance),
+        )
+
+    @router.callback_query(F.data == "admin:controls")
+    async def controls(callback: CallbackQuery, state: FSMContext) -> None:
+        if not is_admin(callback.from_user.id):
+            await deny_callback(callback)
+            return
+        await show_controls(callback, state)
+
+    @router.callback_query(F.data == "admin:maintenance:request")
+    async def request_maintenance(callback: CallbackQuery, state: FSMContext) -> None:
+        if not is_admin(callback.from_user.id):
+            await deny_callback(callback)
+            return
+        if await db.access_mode() == "maintenance":
+            await show_controls(callback, state)
+            return
+        await state.set_state(AdminControl.maintenance_confirm)
+        await callback.answer()
+        await callback.message.edit_text(
+            "⏸ <b>Приостановить бота для пользователей?</b>\n\n"
+            "Обычные пользователи не смогут пользоваться ботом и не получат "
+            "автоматические сообщения. Ты сможешь пользоваться ботом и отправлять "
+            "ручную рассылку.",
+            reply_markup=admin_confirm_keyboard("admin:maintenance:confirm"),
+        )
+
+    @router.callback_query(AdminControl.maintenance_confirm, F.data == "admin:maintenance:confirm")
+    async def confirm_maintenance(callback: CallbackQuery, state: FSMContext) -> None:
+        if not is_admin(callback.from_user.id):
+            await deny_callback(callback)
+            return
+        await db.set_access_mode("maintenance")
+        await show_controls(callback, state)
+
+    @router.callback_query(F.data == "admin:maintenance:off")
+    async def disable_maintenance(callback: CallbackQuery, state: FSMContext) -> None:
+        if not is_admin(callback.from_user.id):
+            await deny_callback(callback)
+            return
+        await db.set_access_mode("normal")
+        await show_controls(callback, state)
+
+    @router.callback_query(F.data == "admin:shutdown:request")
+    async def request_shutdown(callback: CallbackQuery, state: FSMContext) -> None:
+        if not is_admin(callback.from_user.id):
+            await deny_callback(callback)
+            return
+        service_name = managed_service_name()
+        if service_name is None:
+            await callback.answer("Неизвестен systemd-сервис бота", show_alert=True)
+            return
+        await state.set_state(AdminControl.shutdown_first)
+        await callback.answer()
+        await callback.message.edit_text(
+            "🔴 <b>Полностью отключить бота?</b>\n\n"
+            "Он перестанет отвечать всем, включая администраторов. Рассылки тоже "
+            "остановятся. Восстановление потребует доступа к серверу и ручного "
+            "удаления маркера отключения.",
+            reply_markup=admin_confirm_keyboard("admin:shutdown:first"),
+        )
+
+    @router.callback_query(AdminControl.shutdown_first, F.data == "admin:shutdown:first")
+    async def confirm_shutdown_first(callback: CallbackQuery, state: FSMContext) -> None:
+        if not is_admin(callback.from_user.id):
+            await deny_callback(callback)
+            return
+        await state.set_state(AdminControl.shutdown_second)
+        await callback.answer()
+        await callback.message.edit_text(
+            "⚠️ <b>Подтверди ещё раз.</b>\n\n"
+            "Этот рубильник отключит весь сервис. Кнопки админки после этого не помогут.",
+            reply_markup=admin_confirm_keyboard("admin:shutdown:second"),
+        )
+
+    @router.callback_query(AdminControl.shutdown_second, F.data == "admin:shutdown:second")
+    async def confirm_shutdown_second(callback: CallbackQuery, state: FSMContext) -> None:
+        if not is_admin(callback.from_user.id):
+            await deny_callback(callback)
+            return
+        await state.set_state(AdminControl.shutdown_phrase)
+        await callback.answer()
+        await callback.message.edit_text(
+            "Последний шаг: отправь отдельным сообщением точную фразу "
+            "<code>ОТКЛЮЧИТЬ БОТА</code>. Для отмены отправь /cancel."
+        )
+
+    @router.message(AdminControl.shutdown_phrase, Command("cancel"))
+    async def cancel_shutdown(message: Message, state: FSMContext) -> None:
+        if not is_admin(message.from_user.id):
+            return
+        await state.clear()
+        await message.answer("Отключение отменено.", reply_markup=admin_keyboard())
+
+    @router.message(AdminControl.shutdown_phrase)
+    async def finish_shutdown(message: Message, state: FSMContext) -> None:
+        if not is_admin(message.from_user.id):
+            return
+        if message.text != "ОТКЛЮЧИТЬ БОТА":
+            await message.answer("Фраза не совпала. Для отмены отправь /cancel.")
+            return
+        service_name = managed_service_name()
+        if service_name is None:
+            await message.answer("Неизвестен systemd-сервис. Отключение отменено.")
+            await state.clear()
+            return
+        process = await asyncio.create_subprocess_exec(
+            "systemctl", "--user", "disable", service_name,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        if await process.wait() != 0:
+            await message.answer("Не удалось отключить systemd-сервис. Бот продолжает работу.")
+            await state.clear()
+            return
+        marker = db.path.parent / "bot-disabled"
+        marker.touch(exist_ok=True)
+        await state.clear()
+        await message.answer(
+            "🔴 Бот отключён. Сейчас остановлю сервис. Для восстановления "
+            "нужно удалить маркер bot-disabled и вручную включить сервис."
+        )
+        await asyncio.create_subprocess_exec(
+            "systemctl", "--user", "stop", service_name,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
 
     @router.callback_query(F.data == "admin:broadcast")
     async def request_broadcast(callback: CallbackQuery, state: FSMContext) -> None:
@@ -168,7 +334,7 @@ def build_admin_router(
         if not is_admin(message.from_user.id):
             return
         await state.clear()
-        await message.answer("Рассылка отменена.", reply_markup=admin_keyboard())
+        await message.answer("Действие отменено.", reply_markup=admin_keyboard())
 
     @router.message(AdminBroadcast.waiting_for_message)
     async def preview_broadcast(message: Message, state: FSMContext) -> None:

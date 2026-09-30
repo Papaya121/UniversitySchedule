@@ -1,0 +1,50 @@
+name: Test and deploy dev
+
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: university-schedule-development
+  cancel-in-progress: false
+
+jobs:
+  test-and-deploy-dev:
+    if: github.repository == 'Papaya121/UniversitySchedule' && github.ref == 'refs/heads/dev'
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - university-schedule
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Verify isolated dev deployment
+        run: |
+          test -f deploy/deploy-dev.sh
+          test -f deploy/university-schedule-dev.service
+          grep -Fq 'await service.check_changes(notify=False)' bot/main.py
+          grep -Fq 'bot-instance.lock' bot/main.py
+
+      - name: Create test environment
+        run: |
+          python3 -m venv .ci-venv
+          .ci-venv/bin/python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Run tests
+        run: .ci-venv/bin/python -m unittest discover -s tests -v
+
+      - name: Deploy dev bot
+        env:
+          TELEGRAM_BOT_TOKEN_DEV: ${{ secrets.TELEGRAM_BOT_TOKEN_DEV }}
+        run: bash deploy/deploy-dev.sh

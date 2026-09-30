@@ -1,6 +1,7 @@
 import asyncio
 import fcntl
 import logging
+import os
 from datetime import datetime, time
 
 from aiogram import Bot, Dispatcher
@@ -10,6 +11,7 @@ from aiogram.types import BotCommand, BotCommandScopeChat, ErrorEvent
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from bot.admin import build_admin_router
+from bot.access import UserAccessMiddleware
 from bot.backup import BackupManager
 from bot.config import Settings
 from bot.database import Database
@@ -40,9 +42,11 @@ async def main(settings: Settings | None = None) -> None:
         settings.tz,
         reporter,
         time(settings.morning_hour, settings.morning_minute),
+        settings.admin_ids,
     )
 
     dispatcher = Dispatcher()
+    dispatcher.update.outer_middleware(UserAccessMiddleware(database, settings.admin_ids))
     dispatcher.include_router(build_admin_router(bot, database, settings.admin_ids, reporter))
     dispatcher.include_router(
         build_router(database, service, reporter, settings.donation_url)
@@ -164,6 +168,9 @@ async def main(settings: Settings | None = None) -> None:
 def run() -> None:
     settings = Settings()
     settings.database_path.parent.mkdir(parents=True, exist_ok=True)
+    if (settings.database_path.parent / "bot-disabled").exists():
+        logging.error("Bot is permanently disabled; remove the marker manually to restart")
+        return
     lock_path = settings.database_path.parent / "bot-instance.lock"
     with lock_path.open("a+b") as lock_file:
         try:

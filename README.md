@@ -45,6 +45,44 @@ Workflow `.github/workflows/deploy.yml` запускается только по
 `university-schedule`. Перед каждым обновлением workflow запускает тесты, делает
 согласованную резервную копию SQLite и только после этого перезапускает бота.
 
+Push в `dev` запускает отдельный workflow `.github/workflows/deploy-dev.yml`.
+Он обновляет только `/home/papaya/UniversitySchedule-dev` и пользовательский сервис
+`university-schedule-dev.service`. Токен берётся из секрета репозитория
+`TELEGRAM_BOT_TOKEN_DEV` и записывается в отдельный `.env`. База SQLite и список
+пользователей у тестового бота отдельные и при первом запуске пустые. ID
+администратора dev-бота — `959026123`; он обновляется при каждом деплое. Продакшен
+остаётся в `/home/papaya/UniversitySchedule` под сервисом
+`university-schedule.service`. Для проверки тестового бота:
+
+```bash
+systemctl --user status university-schedule-dev.service
+journalctl --user -u university-schedule-dev.service -f
+```
+
+## Экстренное отключение
+
+В `/admin` → «Отключения» есть пауза для пользователей и полное отключение.
+Пауза сохраняется в базе и переживает перезапуск: обычные пользователи не могут
+пользоваться ботом и не получают автоматические уведомления. Администратор
+продолжает работать и может отправить ручную рассылку. Для включения паузы
+нужно подтверждение; вернуть обычный режим можно там же.
+
+Полное отключение требует двух подтверждений и точной фразы. Оно создаёт
+`data/bot-disabled`, останавливает и отключает текущий systemd-сервис. Пока
+маркер существует, бот не запустится даже после нового деплоя. Для ручного
+восстановления через SSH на соответствующей машине удалите маркер и включите
+нужный сервис, например для продакшена:
+
+```bash
+rm /home/papaya/UniversitySchedule/data/bot-disabled
+systemctl --user enable --now university-schedule.service
+```
+
+Для dev используйте `/home/papaya/UniversitySchedule-dev/data/bot-disabled` и
+`university-schedule-dev.service`. Если до полного отключения была включена
+пауза, она останется включённой после восстановления, пока администратор не
+выключит её в панели.
+
 Runner установлен в `/home/papaya/actions-runner-university-schedule` и работает
 как пользовательский сервис `github-actions-runner.service`. Для регистрации нужен
 одноразовый токен из `Settings → Actions → Runners → New self-hosted runner`:

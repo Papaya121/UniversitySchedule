@@ -14,6 +14,7 @@ EMPTY_SCHEDULE_FINGERPRINT = hashlib.sha256(b"[]").hexdigest()
 
 class Database:
     def __init__(self, path: Path) -> None:
+        self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
@@ -474,6 +475,24 @@ class Database:
                 (f"fingerprint_v2:{group_name}",),
             ).fetchone()
             return row is not None
+
+    async def access_mode(self) -> str:
+        async with self._lock:
+            row = self._connection.execute(
+                "SELECT value FROM bot_settings WHERE key = 'access_mode'"
+            ).fetchone()
+            return row["value"] if row else "normal"
+
+    async def set_access_mode(self, mode: str) -> None:
+        if mode not in {"normal", "maintenance"}:
+            raise ValueError("Unknown access mode")
+        async with self._lock:
+            self._connection.execute(
+                "INSERT INTO bot_settings(key, value) VALUES ('access_mode', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (mode,),
+            )
+            self._connection.commit()
 
     async def mark_fingerprint_v2_ready(self, group_name: str) -> None:
         async with self._lock:
