@@ -96,6 +96,14 @@ async def main() -> None:
         max_instances=1,
         coalesce=True,
     )
+    scheduler.add_job(
+        service.send_lesson_start,
+        "cron",
+        minute="*",
+        id="lesson_start",
+        max_instances=1,
+        coalesce=True,
+    )
 
     async def create_backup() -> None:
         try:

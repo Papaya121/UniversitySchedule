@@ -1,7 +1,7 @@
 import html
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from aiogram import BaseMiddleware, F, Router
@@ -12,7 +12,7 @@ from aiogram.types import CallbackQuery, ErrorEvent, Message, TelegramObject
 
 from bot.database import Database
 from bot.error_reporter import ErrorReporter, is_message_not_modified
-from bot.formatters import format_schedule
+from bot.formatters import MONTHS, format_schedule, human_date
 from bot.keyboards import (
     MAIN_KEYBOARD_VERSION,
     donation_keyboard,
@@ -21,7 +21,9 @@ from bot.keyboards import (
     notification_choice_keyboard,
     settings_keyboard,
     subgroup_keyboard,
+    week_keyboard,
 )
+from bot.models import DaySchedule
 from bot.service import ScheduleService
 
 logger = logging.getLogger(__name__)
@@ -67,6 +69,34 @@ class MenuRefreshMiddleware(BaseMiddleware):
 def normalize_group(value: str) -> str:
     """Group identifiers on the university site are uppercase and contain no spaces."""
     return "".join(value.split()).upper()
+
+
+def calendar_week_start(day: date) -> date:
+    return day - timedelta(days=day.weekday())
+
+
+def week_label(start: date) -> str:
+    end = start + timedelta(days=6)
+    if start.year == end.year and start.month == end.month:
+        return f"{start.day:02d}–{end.day:02d} {MONTHS[end.month]}"
+    if start.year == end.year:
+        return f"{start.day:02d} {MONTHS[start.month]} – {end.day:02d} {MONTHS[end.month]}"
+    return (
+        f"{start.day:02d} {MONTHS[start.month]} {start.year} – "
+        f"{end.day:02d} {MONTHS[end.month]} {end.year}"
+    )
+
+
+def available_week_starts(
+    schedules: dict[date, DaySchedule], today: date
+) -> list[date]:
+    current = calendar_week_start(today)
+    future = {
+        calendar_week_start(day)
+        for day, schedule in schedules.items()
+        if day >= current + timedelta(days=7) and schedule.lessons
+    }
+    return [current, *sorted(future)]
 
 
 def build_router(
@@ -116,26 +146,8 @@ def build_router(
 
         data = await state.get_data()
         await db.remember_group(group_name)
-        if data.get("mode") == "settings":
-            current = await db.get_user(message.chat.id)
-            if not current:
-                await state.update_data(group_name=group_name, mode="onboarding")
-                await state.set_state(ProfileSetup.waiting_for_subgroup)
-                await checking.edit_text("Группа найдена ✅\n\nТеперь выбери подгруппу:", reply_markup=subgroup_keyboard())
-                return
-            sender = message.from_user
-            await db.upsert_user(
-                message.chat.id, group_name, current["subgroup"],
-                sender.first_name if sender else current["first_name"],
-                sender.username if sender else current["username"],
-            )
-            await state.clear()
-            await checking.edit_text(
-                f"Группа изменена на <b>{html.escape(group_name)}</b> ✅\n"
-                f"Подгруппа осталась прежней: <b>{current['subgroup']}</b>."
-            )
-            return
-
+        if data.get("mode") == "settings" and not await db.get_user(message.chat.id):
+            await state.update_data(mode="onboarding")
         await state.update_data(group_name=group_name)
         await state.set_state(ProfileSetup.waiting_for_subgroup)
         await checking.edit_text(
@@ -182,12 +194,15 @@ def build_router(
     async def receive_group(message: Message, state: FSMContext) -> None:
         await accept_group(message, state, message.text)
 
-    @router.callback_query(F.data.startswith("subgroup:"))
+    @router.callback_query(
+        ProfileSetup.waiting_for_subgroup,
+        F.data.in_({"subgroup:1", "subgroup:2"}),
+    )
     async def choose_subgroup(callback: CallbackQuery, state: FSMContext) -> None:
         subgroup = int(callback.data.split(":", 1)[1])
         data = await state.get_data()
         current = await db.get_user(callback.message.chat.id)
-        group_name = data.get("group_name") or (current["group_name"] if current else None)
+        group_name = data.get("group_name")
         if not group_name:
             await callback.answer("Сначала выбери группу через /start", show_alert=True)
             return
@@ -208,6 +223,10 @@ def build_router(
                 reply_markup=notification_choice_keyboard(),
             )
             return
+        if current is None:
+            await callback.answer("Настройка устарела. Нажми /start", show_alert=True)
+            await state.clear()
+            return
         await db.upsert_user(
             callback.message.chat.id, group_name, subgroup, user.first_name, user.username
         )
@@ -219,6 +238,12 @@ def build_router(
             "Если расписание поменяется, я сразу напишу."
         )
         await callback.message.answer("Что показать?", reply_markup=main_keyboard())
+
+    @router.callback_query(F.data.startswith("subgroup:"))
+    async def stale_subgroup_choice(callback: CallbackQuery) -> None:
+        await callback.answer(
+            "Сначала выбери группу через /start или настройки", show_alert=True
+        )
 
     @router.callback_query(
         ProfileSetup.waiting_for_notifications,
@@ -284,17 +309,58 @@ def build_router(
         today = datetime.now(service.timezone).date()
         try:
             schedules = await service.schedules(user["group_name"])
-            await message.answer(
-                f"🗓 <b>Ближайшие 7 дней · {html.escape(user['group_name'])}</b>"
-            )
-            for offset in range(7):
-                day = today + timedelta(days=offset)
-                schedule = schedules.get(day)
-                if schedule:
-                    await message.answer(format_schedule(schedule.for_subgroup(user["subgroup"])))
+            weeks = available_week_starts(schedules, today)
+            if len(weeks) > 1:
+                await message.answer(
+                    f"🗓 Сегодня {today.day} {MONTHS[today.month]}. "
+                    "<b>Какую неделю показать?</b>",
+                    reply_markup=week_keyboard(weeks, [week_label(start) for start in weeks]),
+                )
+            else:
+                await send_week(message, schedules, weeks[0], user)
         except Exception as error:
             await reporter.report("Показ расписания на неделю", error)
             await message.answer("Сайт расписания временно недоступен. Попробуй позже 🙌")
+
+    async def send_week(
+        message: Message, schedules: dict[date, DaySchedule], start: date, user
+    ) -> None:
+        await message.answer(
+            f"🗓 <b>{week_label(start)} · {html.escape(user['group_name'])}</b>"
+        )
+        for offset in range(7):
+            day = start + timedelta(days=offset)
+            schedule = schedules.get(day)
+            if schedule is None:
+                await message.answer(
+                    f"<b>{human_date(day)}</b>\nРасписание ещё не опубликовано."
+                )
+            else:
+                await message.answer(
+                    format_schedule(schedule.for_subgroup(user["subgroup"]))
+                )
+
+    @router.callback_query(F.data.startswith("week:"))
+    async def choose_week(callback: CallbackQuery) -> None:
+        await callback.answer()
+        user = await db.get_user(callback.message.chat.id)
+        if not user:
+            await callback.message.answer("Сначала создай профиль командой /start 👇")
+            return
+        try:
+            start = date.fromisoformat(callback.data.split(":", 1)[1])
+            schedules = await service.schedules(user["group_name"])
+            if start not in available_week_starts(
+                schedules, datetime.now(service.timezone).date()
+            ):
+                await callback.message.answer("Выбор недели устарел. Нажми «🗓 Неделя» ещё раз.")
+                return
+            await send_week(callback.message, schedules, start, user)
+        except ValueError:
+            await callback.message.answer("Выбор недели устарел. Нажми «🗓 Неделя» ещё раз.")
+        except Exception as error:
+            await reporter.report("Показ выбранной недели", error)
+            await callback.message.answer("Сайт расписания временно недоступен. Попробуй позже 🙌")
 
     @router.message(Command("settings"))
     @router.message(F.text == "⚙️ Настройки")
@@ -305,11 +371,13 @@ def build_router(
             await ask_group(message, state, "onboarding")
             return
         enabled = bool(user["next_lesson_notifications"])
+        start_enabled = bool(user["lesson_start_notifications"])
+        daily_enabled = bool(user["daily_schedule_notifications"])
         await message.answer(
             f"Группа: <b>{html.escape(user['group_name'])}</b>\n"
             f"Подгруппа: <b>{user['subgroup']}</b>\n\n"
             "Здесь можно изменить профиль и уведомления:",
-            reply_markup=settings_keyboard(enabled),
+            reply_markup=settings_keyboard(enabled, start_enabled, daily_enabled),
         )
 
     @router.callback_query(F.data == "settings:group")
@@ -326,7 +394,38 @@ def build_router(
         enabled = await db.toggle_next_lesson_notifications(callback.message.chat.id)
         status = "включены ✅" if enabled else "выключены ❌"
         await callback.answer(f"Уведомления {status}")
-        await callback.message.edit_reply_markup(reply_markup=settings_keyboard(enabled))
+        await callback.message.edit_reply_markup(reply_markup=settings_keyboard(
+            enabled, bool(user["lesson_start_notifications"]),
+            bool(user["daily_schedule_notifications"]),
+        ))
+
+    @router.callback_query(F.data == "notifications:start:toggle")
+    async def toggle_start_notifications(callback: CallbackQuery) -> None:
+        user = await db.get_user(callback.message.chat.id)
+        if not user:
+            await callback.answer("Сначала создай профиль через /start", show_alert=True)
+            return
+        enabled = await db.toggle_lesson_start_notifications(callback.message.chat.id)
+        status = "включены ✅" if enabled else "выключены ❌"
+        await callback.answer(f"Уведомления о начале пары {status}")
+        await callback.message.edit_reply_markup(reply_markup=settings_keyboard(
+            bool(user["next_lesson_notifications"]), enabled,
+            bool(user["daily_schedule_notifications"]),
+        ))
+
+    @router.callback_query(F.data == "notifications:daily:toggle")
+    async def toggle_daily_notifications(callback: CallbackQuery) -> None:
+        user = await db.get_user(callback.message.chat.id)
+        if not user:
+            await callback.answer("Сначала создай профиль через /start", show_alert=True)
+            return
+        enabled = await db.toggle_daily_schedule_notifications(callback.message.chat.id)
+        status = "включена ✅" if enabled else "выключена ❌"
+        await callback.answer(f"Рассылка утром и в конце дня {status}")
+        await callback.message.edit_reply_markup(reply_markup=settings_keyboard(
+            bool(user["next_lesson_notifications"]),
+            bool(user["lesson_start_notifications"]), enabled,
+        ))
 
     @router.message(Command("donate"))
     @router.message(F.text == "❤️ Поддержать разработчика")

@@ -1,3 +1,5 @@
+from datetime import date
+
 from aiogram.types import CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
 
@@ -27,16 +29,32 @@ def notification_choice_keyboard() -> InlineKeyboardMarkup:
     ]])
 
 
-def settings_keyboard(next_lesson_enabled: bool) -> InlineKeyboardMarkup:
-    status = "✅ Включены" if next_lesson_enabled else "❌ Выключены"
+def week_keyboard(weeks: list[date], labels: list[str]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="1️⃣ Первая", callback_data="subgroup:1"),
-            InlineKeyboardButton(text="2️⃣ Вторая", callback_data="subgroup:2"),
-        ],
+        [InlineKeyboardButton(text=label, callback_data=f"week:{week.isoformat()}")]
+        for week, label in zip(weeks, labels, strict=True)
+    ])
+
+
+def settings_keyboard(
+    next_lesson_enabled: bool, lesson_start_enabled: bool,
+    daily_schedule_enabled: bool,
+) -> InlineKeyboardMarkup:
+    next_status = "✅ Включены" if next_lesson_enabled else "❌ Выключены"
+    start_status = "✅ Включены" if lesson_start_enabled else "❌ Выключены"
+    daily_status = "✅ Включена" if daily_schedule_enabled else "❌ Выключена"
+    return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
-            text=f"Следующая пара: {status}",
+            text=f"Следующая пара: {next_status}",
             callback_data="notifications:toggle",
+        )],
+        [InlineKeyboardButton(
+            text=f"Начало пары: {start_status}",
+            callback_data="notifications:start:toggle",
+        )],
+        [InlineKeyboardButton(
+            text=f"Утро и конец дня: {daily_status}",
+            callback_data="notifications:daily:toggle",
         )],
         [InlineKeyboardButton(text="🎓 Сменить группу", callback_data="settings:group")],
     ])

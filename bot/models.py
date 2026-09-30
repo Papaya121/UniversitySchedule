@@ -10,9 +10,10 @@ class Lesson:
     subgroup: int | None
     room: str | None = None
     teacher: str | None = None
+    groups: tuple[str, ...] = ()
 
     def fingerprint(self) -> tuple[str, ...]:
-        return (
+        value = (
             self.starts_at.isoformat(timespec="minutes"),
             self.ends_at.isoformat(timespec="minutes"),
             self.subject,
@@ -20,6 +21,7 @@ class Lesson:
             self.room or "",
             self.teacher or "",
         )
+        return value + self.groups if len(self.groups) > 1 else value
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,4 +34,3 @@ class DaySchedule:
             self.day,
             tuple(x for x in self.lessons if x.subgroup in (None, subgroup)),
         )
-

@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 import tempfile
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -72,6 +73,57 @@ class ScheduleProtectionTest(unittest.IsolatedAsyncioTestCase):
         return ScheduleService(
             self.bot, self.db, FakeClient(schedules), TZ, self.reporter
         )
+
+    async def test_lesson_start_only_for_enabled_subgroup_once(self) -> None:
+        group = "ИС2-261-ОБ"
+        fixed_now = datetime(2026, 9, 30, 10, 0, tzinfo=TZ)
+        await self.db.upsert_user(42, group, 1, "Иван", None)
+        await self.db.upsert_user(43, group, 1, "Анна", None)
+        await self.db.upsert_user(44, group, 2, "Пётр", None)
+        await self.db.toggle_lesson_start_notifications(42)
+        await self.db.toggle_lesson_start_notifications(44)
+        schedule = DaySchedule(fixed_now.date(), (
+            Lesson(time(10), time(11, 30), "Лабораторная", 1, "101", "Иванов И.И."),
+            Lesson(time(11, 40), time(13, 10), "Другая пара", None),
+        ))
+        service = self.make_service({fixed_now.date(): schedule})
+
+        with patch("bot.service.datetime") as mock_datetime:
+            mock_datetime.now.return_value = fixed_now
+            await service.send_lesson_start()
+            await service.send_lesson_start()
+
+        self.assertEqual(len(self.bot.messages), 1)
+        self.assertEqual(self.bot.messages[0][0], 42)
+        self.assertIn("Пара началась", self.bot.messages[0][1])
+        self.assertIn("Лабораторная", self.bot.messages[0][1])
+
+    async def test_daily_toggle_controls_morning_and_end_of_day(self) -> None:
+        group = "ИС2-261-ОБ"
+        fixed_now = datetime(2026, 9, 30, 21, 0, tzinfo=TZ)
+        await self.db.upsert_user(42, group, 1, "Иван", None)
+        await self.db.upsert_user(43, group, 1, "Анна", None)
+        await self.db.toggle_daily_schedule_notifications(43)
+        schedules = {
+            fixed_now.date(): DaySchedule(fixed_now.date(), ()),
+            fixed_now.date() + timedelta(days=1): DaySchedule(
+                fixed_now.date() + timedelta(days=1), ()
+            ),
+        }
+        service = self.make_service(schedules)
+
+        class FrozenDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed_now
+
+        with patch("bot.service.datetime", FrozenDateTime):
+            await service.send_morning()
+            await service.send_tomorrow_after_last_lesson()
+
+        self.assertEqual([chat_id for chat_id, _ in self.bot.messages], [42, 42])
+        self.assertIn("Доброе утро", self.bot.messages[0][1])
+        self.assertIn("Учебный день закончен", self.bot.messages[1][1])
 
     async def test_rejects_all_empty_response_and_keeps_cached_schedule(self) -> None:
         group = "ИС2-261-ОБ"

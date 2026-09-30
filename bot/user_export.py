@@ -14,11 +14,13 @@ USER_EXPORT_COLUMNS = (
     "subgroup",
     "active",
     "next_lesson_notifications",
+    "lesson_start_notifications",
+    "daily_schedule_notifications",
     "created_at",
     "updated_at",
 )
 
-USER_EXPORT_WIDTHS = (16, 24, 24, 18, 12, 12, 28, 22, 22)
+USER_EXPORT_WIDTHS = (16, 24, 24, 18, 12, 12, 28, 28, 28, 22, 22)
 DATE_COLUMNS = {"created_at", "updated_at"}
 
 
@@ -48,8 +50,8 @@ def build_users_workbook(users: Sequence[Mapping[str, object]]) -> bytes:
             # crafted name cannot become an Excel formula when the file is opened.
             if isinstance(cell.value, str):
                 cell.data_type = "s"
-        row[7].number_format = "yyyy-mm-dd hh:mm:ss"
-        row[8].number_format = "yyyy-mm-dd hh:mm:ss"
+        row[9].number_format = "yyyy-mm-dd hh:mm:ss"
+        row[10].number_format = "yyyy-mm-dd hh:mm:ss"
 
     header_fill = PatternFill(fill_type="solid", fgColor="1F4E78")
     for cell in worksheet[1]:

@@ -2,6 +2,7 @@ import unittest
 from datetime import date
 
 from bot.schedule_client import parse_schedule_html
+from bot.formatters import format_schedule
 
 
 HTML = """
@@ -17,7 +18,7 @@ HTML = """
       </tr>
       <tr>
         <td rowspan="2">15:20-16:50</td>
-        <td>Лек. История России<br/><br/>ИС2-261-ОБ<br/><br/>
+        <td>Лек. История России<br/><br/>ИС2-261-ОБ<br/>ИС2-262-ОБ<br/>ИС2-263-ОБ<br/><br/>
             <a href="/map">314Л/Гл</a><br/>Разиньков М.Е.<br/></td>
       </tr>
       <tr>
@@ -40,6 +41,10 @@ class ParseScheduleTest(unittest.TestCase):
         self.assertEqual(schedule.lessons[0].subgroup, 1)
         self.assertEqual(schedule.lessons[0].room, "3Комп/АГор")
         self.assertEqual(schedule.lessons[1].subgroup, None)
+        self.assertEqual(
+            schedule.lessons[1].groups,
+            ("ИС2-261-ОБ", "ИС2-262-ОБ", "ИС2-263-ОБ"),
+        )
         self.assertEqual(schedule.lessons[2].subgroup, 2)
         self.assertEqual(schedule.lessons[2].starts_at.hour, 15)
 
@@ -55,7 +60,12 @@ class ParseScheduleTest(unittest.TestCase):
         schedules = parse_schedule_html(HTML)
         self.assertEqual(schedules[date(2026, 9, 5)].lessons, ())
 
+    def test_displays_groups_only_for_shared_lesson(self) -> None:
+        schedule = parse_schedule_html(HTML)[date(2026, 9, 4)]
+        text = format_schedule(schedule.for_subgroup(1))
+        self.assertIn("👥 ИС2-261-ОБ, ИС2-262-ОБ, ИС2-263-ОБ", text)
+        self.assertEqual(text.count("👥"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
-

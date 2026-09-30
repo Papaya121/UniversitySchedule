@@ -31,6 +31,8 @@ class Database:
                     username TEXT,
                     active INTEGER NOT NULL DEFAULT 1,
                     next_lesson_notifications INTEGER NOT NULL DEFAULT 1,
+                    lesson_start_notifications INTEGER NOT NULL DEFAULT 0,
+                    daily_schedule_notifications INTEGER NOT NULL DEFAULT 1,
                     menu_version INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -97,6 +99,16 @@ class Database:
             if "next_lesson_notifications" not in columns:
                 self._connection.execute(
                     "ALTER TABLE users ADD COLUMN next_lesson_notifications "
+                    "INTEGER NOT NULL DEFAULT 1"
+                )
+            if "lesson_start_notifications" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE users ADD COLUMN lesson_start_notifications "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+            if "daily_schedule_notifications" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE users ADD COLUMN daily_schedule_notifications "
                     "INTEGER NOT NULL DEFAULT 1"
                 )
             if "menu_version" not in columns:
@@ -325,6 +337,38 @@ class Database:
             ))
             self._connection.commit()
 
+    async def toggle_lesson_start_notifications(self, chat_id: int) -> bool:
+        async with self._lock:
+            self._connection.execute("""
+                UPDATE users
+                SET lesson_start_notifications = CASE lesson_start_notifications
+                    WHEN 1 THEN 0 ELSE 1 END,
+                    updated_at = ?
+                WHERE chat_id = ?
+            """, (datetime.now().isoformat(timespec="seconds"), chat_id))
+            row = self._connection.execute(
+                "SELECT lesson_start_notifications FROM users WHERE chat_id = ?",
+                (chat_id,),
+            ).fetchone()
+            self._connection.commit()
+            return bool(row and row["lesson_start_notifications"])
+
+    async def toggle_daily_schedule_notifications(self, chat_id: int) -> bool:
+        async with self._lock:
+            self._connection.execute("""
+                UPDATE users
+                SET daily_schedule_notifications = CASE daily_schedule_notifications
+                    WHEN 1 THEN 0 ELSE 1 END,
+                    updated_at = ?
+                WHERE chat_id = ?
+            """, (datetime.now().isoformat(timespec="seconds"), chat_id))
+            row = self._connection.execute(
+                "SELECT daily_schedule_notifications FROM users WHERE chat_id = ?",
+                (chat_id,),
+            ).fetchone()
+            self._connection.commit()
+            return bool(row and row["daily_schedule_notifications"])
+
     async def record_error(self, context: str, error: BaseException) -> None:
         async with self._lock:
             self._connection.execute("""
@@ -465,6 +509,7 @@ class Database:
                     "subgroup": lesson.subgroup,
                     "room": lesson.room,
                     "teacher": lesson.teacher,
+                    "groups": lesson.groups,
                 }
                 for lesson in schedule.lessons
             ], ensure_ascii=False, separators=(",", ":"))
@@ -496,6 +541,7 @@ class Database:
                     subgroup=item["subgroup"],
                     room=item["room"],
                     teacher=item["teacher"],
+                    groups=tuple(item.get("groups", ())),
                 )
                 for item in json.loads(row["payload"])
             )

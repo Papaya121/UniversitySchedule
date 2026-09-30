@@ -69,7 +69,12 @@ class ScheduleService:
             cached_at = self._cache_at.get(group_name)
             if not force and cached_at and now - cached_at < timedelta(minutes=5):
                 return self._cache[group_name]
-            candidate = await self.client.fetch(group_name, now.date(), days=14)
+            # Keep the current calendar week available, including days before today,
+            # while retaining the 14-day lookahead used by notifications.
+            week_start = now.date() - timedelta(days=now.date().weekday())
+            candidate = await self.client.fetch(
+                group_name, week_start, days=(now.date() - week_start).days + 14
+            )
             candidate_days = sorted(candidate)
             range_start = candidate_days[0] if candidate_days else now.date()
             range_end = candidate_days[-1] if candidate_days else now.date() + timedelta(days=13)
@@ -185,6 +190,8 @@ class ScheduleService:
         today = now.date()
         try:
             for user in await self.db.active_users():
+                if not user["daily_schedule_notifications"]:
+                    continue
                 schedule = await self.for_day(
                     user["group_name"], today, user["subgroup"], allow_stale=True
                 )
@@ -210,6 +217,8 @@ class ScheduleService:
         tomorrow = today + timedelta(days=1)
         try:
             for user in await self.db.active_users():
+                if not user["daily_schedule_notifications"]:
+                    continue
                 current = await self.for_day(user["group_name"], today, user["subgroup"])
                 last_end = max((x.ends_at for x in current.lessons), default=time(20, 10))
                 if now.time().replace(second=0, microsecond=0) < last_end:
@@ -256,6 +265,10 @@ class ScheduleService:
                     f"Следующая в <b>{following.starts_at:%H:%M}</b>:\n"
                     f"<b>{html.escape(following.subject)}</b>"
                 )
+                if len(following.groups) > 1:
+                    message += "\n👥 " + ", ".join(
+                        html.escape(group) for group in following.groups
+                    )
                 details = []
                 if following.room:
                     details.append(f"📍 {html.escape(following.room)}")
@@ -270,6 +283,47 @@ class ScheduleService:
             return
         except Exception as error:
             await self.error_reporter.report("Уведомления о следующей паре", error)
+
+    async def send_lesson_start(self) -> None:
+        now = datetime.now(self.timezone)
+        current_minute = now.time().replace(second=0, microsecond=0)
+        try:
+            for user in await self.db.active_users():
+                if not user["lesson_start_notifications"]:
+                    continue
+                schedule = await self.for_day(
+                    user["group_name"], now.date(), user["subgroup"]
+                )
+                for index, lesson in enumerate(schedule.lessons):
+                    if lesson.starts_at != current_minute:
+                        continue
+                    kind = f"lesson_start:{current_minute:%H%M}:{index}"
+                    if not await self.db.claim_delivery(user["chat_id"], kind, now.date()):
+                        continue
+                    message = (
+                        "🔔 <b>Пара началась!</b>\n\n"
+                        f"<b>{lesson.starts_at:%H:%M}–{lesson.ends_at:%H:%M}</b>  "
+                        f"{html.escape(lesson.subject)}"
+                    )
+                    if len(lesson.groups) > 1:
+                        message += "\n👥 " + ", ".join(
+                            html.escape(group) for group in lesson.groups
+                        )
+                    details = []
+                    if lesson.room:
+                        details.append(f"📍 {html.escape(lesson.room)}")
+                    if lesson.teacher:
+                        details.append(f"👤 {html.escape(lesson.teacher)}")
+                    if details:
+                        message += "\n" + " · ".join(details)
+                    if not await self.safe_send(user["chat_id"], message):
+                        await self.db.release_delivery(
+                            user["chat_id"], kind, now.date()
+                        )
+        except SuspiciousEmptyScheduleError:
+            return
+        except Exception as error:
+            await self.error_reporter.report("Уведомления о начале пары", error)
 
     async def broadcast(self, group_name: str, subgroup: int, text: str) -> None:
         for user in await self.db.active_users(subgroup, group_name):

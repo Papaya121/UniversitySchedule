@@ -77,13 +77,14 @@ def parse_schedule_html(html: str) -> dict[date, DaySchedule]:
             if subject_subgroup:
                 subgroup = int(subject_subgroup.group(1))
 
+            groups = tuple(dict.fromkeys(p for p in parts[1:] if GROUP_RE.fullmatch(p)))
             details = [
                 p for p in parts[1:]
                 if not SUBGROUP_RE.search(p) and not GROUP_RE.match(p)
             ]
             room = details[-2] if len(details) >= 2 else None
             teacher = details[-1] if details else None
-            lessons.append(Lesson(*current_time, subject, subgroup, room, teacher))
+            lessons.append(Lesson(*current_time, subject, subgroup, room, teacher, groups))
 
         result[day] = DaySchedule(day, tuple(lessons))
     return result

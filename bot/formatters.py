@@ -26,6 +26,8 @@ def format_schedule(schedule: DaySchedule, title: str | None = None) -> str:
     for index, lesson in enumerate(schedule.lessons, start=1):
         time_range = f"{lesson.starts_at:%H:%M}–{lesson.ends_at:%H:%M}"
         lines.append(f"<b>{index}. {time_range}</b>  {html.escape(lesson.subject)}")
+        if len(lesson.groups) > 1:
+            lines.append("👥 " + ", ".join(html.escape(group) for group in lesson.groups))
         details: list[str] = []
         if lesson.room:
             details.append(f"📍 {html.escape(lesson.room)}")

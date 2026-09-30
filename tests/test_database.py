@@ -5,9 +5,11 @@ import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from datetime import time
 
 from bot.backup import BackupManager
 from bot.database import Database
+from bot.models import DaySchedule, Lesson
 
 
 class DatabaseTest(unittest.IsolatedAsyncioTestCase):
@@ -63,6 +65,15 @@ class DatabaseTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.db.snapshot("ИС2-261-ОБ", day, 1), "abc")
         self.assertIsNone(await self.db.snapshot("ДРУГАЯ-ГРУППА", day, 1))
 
+    async def test_preserves_shared_lesson_groups_in_cache(self) -> None:
+        day = date(2026, 9, 4)
+        groups = ("ИС2-261-ОБ", "ИС2-262-ОБ", "ИС2-263-ОБ")
+        schedule = DaySchedule(day, (Lesson(time(8), time(9, 30), "Лекция", None, groups=groups),))
+        await self.db.save_schedule_cache(groups[0], {day: schedule})
+
+        cached = await self.db.load_schedule_cache(groups[0])
+        self.assertEqual(cached[day].lessons[0].groups, groups)
+
     async def test_toggles_next_lesson_notifications(self) -> None:
         await self.db.upsert_user(42, "ИС2-261-ОБ", 1, "Иван", "ivan")
         user = await self.db.get_user(42)
@@ -77,6 +88,20 @@ class DatabaseTest(unittest.IsolatedAsyncioTestCase):
         await self.db.set_next_lesson_notifications(42, False)
         user = await self.db.get_user(42)
         self.assertEqual(user["next_lesson_notifications"], 0)
+
+    async def test_lesson_start_notifications_default_off_and_toggle(self) -> None:
+        await self.db.upsert_user(42, "ИС2-261-ОБ", 1, "Иван", "ivan")
+        self.assertEqual((await self.db.get_user(42))["lesson_start_notifications"], 0)
+        self.assertTrue(await self.db.toggle_lesson_start_notifications(42))
+        self.assertEqual((await self.db.get_user(42))["lesson_start_notifications"], 1)
+        self.assertFalse(await self.db.toggle_lesson_start_notifications(42))
+
+    async def test_daily_schedule_notifications_default_on_and_toggle(self) -> None:
+        await self.db.upsert_user(42, "ИС2-261-ОБ", 1, "Иван", "ivan")
+        self.assertEqual((await self.db.get_user(42))["daily_schedule_notifications"], 1)
+        self.assertFalse(await self.db.toggle_daily_schedule_notifications(42))
+        self.assertEqual((await self.db.get_user(42))["daily_schedule_notifications"], 0)
+        self.assertTrue(await self.db.toggle_daily_schedule_notifications(42))
 
     async def test_updates_suggested_group(self) -> None:
         self.assertEqual(await self.db.suggested_group(), "ИС2-261-ОБ")
@@ -153,6 +178,8 @@ class LegacyDatabaseMigrationTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(user["group_name"], "ИС2-261-ОБ")
             self.assertEqual(user["subgroup"], 2)
             self.assertEqual(user["menu_version"], 0)
+            self.assertEqual(user["lesson_start_notifications"], 0)
+            self.assertEqual(user["daily_schedule_notifications"], 1)
             self.assertEqual(
                 await database.snapshot("ИС2-261-ОБ", date(2026, 9, 4), 2), "abc"
             )
