@@ -90,7 +90,7 @@ def build_admin_router(
             f"({stats['broadcast_delivered']} доставлено)\n\n"
             f"🛑 Режим: <b>{'Пауза для пользователей' if mode == 'maintenance' else 'Обычный'}</b>\n\n"
             f"<b>Группы:</b>\n{group_lines}"
-            f"\n\n<b>Версия 0.3.3</b>"
+            f"\n\n<b>Версия 0.3.31</b>"
         )
 
     @router.message(Command("myid"))

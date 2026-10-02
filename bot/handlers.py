@@ -294,6 +294,9 @@ def build_router(
         day = datetime.now(service.timezone).date() + timedelta(days=offset)
         try:
             schedule = await service.for_day(user["group_name"], day, user["subgroup"])
+            if offset == 0:
+                await service.send_today(message, schedule, user)
+                return
             await message.answer(format_schedule(
                 schedule, title, bool(user["show_shared_groups"]),
                 now=datetime.now(service.timezone),
@@ -463,6 +466,7 @@ def build_router(
             await callback.answer("Сначала создай профиль через /start", show_alert=True)
             return
         enabled = await db.toggle_highlight_current(callback.message.chat.id)
+        await service.refresh_today_messages(callback.message.chat.id)
         await callback.answer(
             "Выделение включено ✅" if enabled else "Выделение выключено ❌"
         )

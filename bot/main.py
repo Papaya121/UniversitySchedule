@@ -68,6 +68,14 @@ async def main(settings: Settings | None = None) -> None:
     loop.set_exception_handler(asyncio_error)
     scheduler = AsyncIOScheduler(timezone=settings.tz)
     scheduler.add_job(
+        service.refresh_today_messages,
+        "cron",
+        minute="*",
+        id="today_highlight",
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
         service.check_changes,
         "interval",
         minutes=settings.check_interval_minutes,
