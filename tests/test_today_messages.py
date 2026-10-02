@@ -45,6 +45,12 @@ class TodayMessageTest(unittest.IsolatedAsyncioTestCase):
     async def send(self) -> None:
         await self.service.send_today(self.message, self.schedule, await self.db.get_user(42))
 
+    async def morning(self) -> None:
+        self.service.for_day = AsyncMock(return_value=self.schedule)
+        self.bot.send_message.return_value = SimpleNamespace(message_id=100)
+        with patch("bot.service.morning_delivery_time", return_value=self.now):
+            await self.service.send_morning()
+
     def advance(self, hour, minute=0) -> None:
         self.clock.now.return_value = self.now.replace(hour=hour, minute=minute)
 
@@ -58,6 +64,61 @@ class TodayMessageTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Физика</b>", edit["text"])
         self.assertIn("Физика</b>", self.message.answer.call_args.args[0])
         self.assertEqual([r["message_id"] for r in await self.db.today_messages(42)], [2])
+
+    async def test_morning_updates_and_today_removes_its_highlight(self) -> None:
+        await self.morning()
+        sent_text = self.bot.send_message.call_args.args[1]
+        self.assertTrue(sent_text.startswith("☀️ Доброе утро!\n\n"))
+        self.assertIn("Математика</b>", sent_text)
+        self.advance(9, 30)
+        await self.service.refresh_today_messages()
+        updated = self.bot.edit_message_text.call_args.kwargs
+        self.assertEqual(updated["message_id"], 100)
+        self.assertTrue(updated["text"].startswith("☀️ Доброе утро!\n\n"))
+        self.assertIn("Физика</b>", updated["text"])
+        await self.send()
+        cleaned = self.bot.edit_message_text.call_args.kwargs
+        self.assertEqual(cleaned["message_id"], 100)
+        self.assertTrue(cleaned["text"].startswith("☀️ Доброе утро!\n\n"))
+        self.assertNotIn("Физика</b>", cleaned["text"])
+        self.assertEqual([r["message_id"] for r in await self.db.today_messages(42)], [1])
+        self.assertIn("Физика</b>", self.message.answer.call_args.args[0])
+        # A repeated morning tick must not replace the user's newer message.
+        await self.morning()
+        self.assertEqual(self.bot.send_message.await_count, 1)
+        self.assertEqual([r["message_id"] for r in await self.db.today_messages(42)], [1])
+
+    async def test_morning_respects_disabled_highlight(self) -> None:
+        await self.db.toggle_highlight_current(42)
+        await self.morning()
+        self.assertNotIn("Математика</b>", self.bot.send_message.call_args.args[1])
+        self.advance(10)
+        await self.service.refresh_today_messages()
+        self.bot.edit_message_text.assert_not_awaited()
+
+    async def test_failed_morning_delivery_keeps_previous_and_retries(self) -> None:
+        await self.send()
+        self.bot.send_message.side_effect = TelegramNetworkError(
+            method=EditMessageText(text="x"), message="Temporary error")
+        await self.morning()
+        self.assertEqual([r["message_id"] for r in await self.db.today_messages(42)], [1])
+        self.bot.edit_message_text.assert_not_awaited()
+        self.bot.send_message.side_effect = None
+        await self.morning()
+        self.assertEqual([r["message_id"] for r in await self.db.today_messages(42)], [100])
+
+    async def test_morning_restart_keeps_greeting(self) -> None:
+        await self.morning()
+        await self.db.close()
+        self.db = Database(Path(self.directory.name) / "test.sqlite3")
+        await self.db.initialize()
+        self.service = ScheduleService(self.bot, self.db, SimpleNamespace(),
+                                       self.now.tzinfo, self.reporter)
+        self.advance(10)
+        await self.service.refresh_today_messages()
+        text = self.bot.edit_message_text.call_args.kwargs["text"]
+        self.assertTrue(text.startswith("☀️ Доброе утро!\n\n"))
+        self.assertIn("Физика</b>", text)
 
     async def test_timer_edits_only_on_change_and_stops_after_last_lesson(self) -> None:
         await self.send()

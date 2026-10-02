@@ -3,6 +3,7 @@ from unittest.mock import patch
 import tempfile
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from bot.database import Database
@@ -29,8 +30,9 @@ class FakeBot:
     def __init__(self) -> None:
         self.messages: list[tuple[int, str]] = []
 
-    async def send_message(self, chat_id: int, text: str) -> None:
+    async def send_message(self, chat_id: int, text: str):
         self.messages.append((chat_id, text))
+        return SimpleNamespace(message_id=len(self.messages))
 
 
 class FakeClient:
