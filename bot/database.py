@@ -35,6 +35,7 @@ class Database:
                     lesson_start_notifications INTEGER NOT NULL DEFAULT 0,
                     daily_schedule_notifications INTEGER NOT NULL DEFAULT 1,
                     show_shared_groups INTEGER NOT NULL DEFAULT 1,
+                    highlight_current INTEGER NOT NULL DEFAULT 1,
                     menu_version INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -116,6 +117,11 @@ class Database:
             if "show_shared_groups" not in columns:
                 self._connection.execute(
                     "ALTER TABLE users ADD COLUMN show_shared_groups "
+                    "INTEGER NOT NULL DEFAULT 1"
+                )
+            if "highlight_current" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE users ADD COLUMN highlight_current "
                     "INTEGER NOT NULL DEFAULT 1"
                 )
             if "menu_version" not in columns:
@@ -389,6 +395,20 @@ class Database:
             ).fetchone()
             self._connection.commit()
             return bool(row and row["show_shared_groups"])
+
+    async def toggle_highlight_current(self, chat_id: int) -> bool:
+        async with self._lock:
+            self._connection.execute("""
+                UPDATE users
+                SET highlight_current = CASE highlight_current WHEN 1 THEN 0 ELSE 1 END,
+                    updated_at = ?
+                WHERE chat_id = ?
+            """, (datetime.now().isoformat(timespec="seconds"), chat_id))
+            row = self._connection.execute(
+                "SELECT highlight_current FROM users WHERE chat_id = ?", (chat_id,)
+            ).fetchone()
+            self._connection.commit()
+            return bool(row and row["highlight_current"])
 
     async def record_error(self, context: str, error: BaseException) -> None:
         async with self._lock:

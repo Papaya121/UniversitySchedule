@@ -31,6 +31,15 @@ class DatabaseTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(user["group_name"], "ПИ-101")
         self.assertEqual(len(await self.db.active_users()), 1)
 
+    async def test_highlight_defaults_on_and_preserves_preference(self) -> None:
+        await self.db.upsert_user(42, "ИС2-261-ОБ", 1, "Иван", "ivan")
+        self.assertEqual((await self.db.get_user(42))["highlight_current"], 1)
+        self.assertFalse(await self.db.toggle_highlight_current(42))
+        await self.db.upsert_user(42, "ПИ-101", 2, "Иван", "ivan")
+        await self.db.initialize()
+        self.assertEqual((await self.db.get_user(42))["highlight_current"], 0)
+        self.assertTrue(await self.db.toggle_highlight_current(42))
+
     async def test_all_users_includes_inactive_profiles(self) -> None:
         await self.db.upsert_user(42, "ИС2-261-ОБ", 1, "Иван", "ivan")
         await self.db.upsert_user(43, "ПИ-101", 2, "Анна", None)
@@ -188,6 +197,7 @@ class LegacyDatabaseMigrationTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(user["lesson_start_notifications"], 0)
             self.assertEqual(user["daily_schedule_notifications"], 1)
             self.assertEqual(user["show_shared_groups"], 1)
+            self.assertEqual(user["highlight_current"], 1)
             self.assertEqual(
                 await database.snapshot("ИС2-261-ОБ", date(2026, 9, 4), 2), "abc"
             )

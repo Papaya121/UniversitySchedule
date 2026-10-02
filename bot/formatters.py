@@ -1,5 +1,5 @@
 import html
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from bot.models import DaySchedule, Lesson
 
@@ -27,14 +27,48 @@ def format_shared_groups(lesson: Lesson, show_shared_groups: bool = True) -> str
 def format_schedule(
     schedule: DaySchedule, title: str | None = None,
     show_shared_groups: bool = True,
+    *, now: datetime | None = None, highlight_current: bool = True,
+    weekly: bool = False,
 ) -> str:
+    highlight_day = bool(
+        highlight_current and weekly and now and schedule.day == now.date()
+    )
+    highlighted = set()
+    if highlight_current and not weekly and now and schedule.day == now.date():
+        current_time = now.time()
+        highlighted = {
+            index for index, lesson in enumerate(schedule.lessons)
+            if lesson.starts_at <= current_time < lesson.ends_at
+        }
+        if not highlighted:
+            upcoming = [
+                lesson.starts_at for lesson in schedule.lessons
+                if lesson.starts_at > current_time
+            ]
+            if upcoming:
+                next_start = min(upcoming)
+                first_start = min(lesson.starts_at for lesson in schedule.lessons)
+                until_next = datetime.combine(schedule.day, next_start, tzinfo=now.tzinfo) - now
+                if next_start != first_start or until_next <= timedelta(minutes=30):
+                    highlighted = {
+                        index for index, lesson in enumerate(schedule.lessons)
+                        if lesson.starts_at == next_start
+                    }
+
+    def finish() -> str:
+        text = "\n".join(lines)
+        if highlight_day:
+            return "<b>" + text.replace("<b>", "").replace("</b>", "") + "</b>"
+        return text
+
     heading = title or "Расписание"
     lines = [f"<b>{html.escape(heading)}</b>", f"<i>{human_date(schedule.day)}</i>", ""]
     if not schedule.lessons:
         lines.append("🌿 Пар нет — можно выдохнуть!")
-        return "\n".join(lines)
+        return finish()
 
     for index, lesson in enumerate(schedule.lessons, start=1):
+        block_start = len(lines)
         time_range = f"{lesson.starts_at:%H:%M}–{lesson.ends_at:%H:%M}"
         lines.append(f"<b>{index}. {time_range}</b>  {html.escape(lesson.subject)}")
         group_text = format_shared_groups(lesson, show_shared_groups)
@@ -47,9 +81,14 @@ def format_schedule(
             details.append(f"👤 {html.escape(lesson.teacher)}")
         if details:
             lines.append(" · ".join(details))
+        if index - 1 in highlighted:
+            block = "\n".join(lines[block_start:])
+            lines[block_start:] = [
+                "<b>" + block.replace("<b>", "").replace("</b>", "") + "</b>"
+            ]
         lines.append("")
     lines.append(f"Всего пар: <b>{len(schedule.lessons)}</b>")
-    return "\n".join(lines)
+    return finish()
 
 
 def format_change(schedule: DaySchedule, show_shared_groups: bool = True) -> str:
