@@ -3,6 +3,7 @@ import hashlib
 import html
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import date, datetime, time, timedelta
 
 from aiogram import Bot
@@ -12,13 +13,14 @@ from aiogram.exceptions import (
     TelegramNetworkError,
     TelegramRetryAfter,
 )
+from aiogram.types import Message
 
 from bot.database import Database
-from bot.error_reporter import ErrorReporter
+from bot.error_reporter import ErrorReporter, is_message_not_modified
 from bot.formatters import (
     format_change, format_new_schedule_period, format_schedule, format_shared_groups,
 )
-from bot.models import DaySchedule
+from bot.models import DaySchedule, Lesson
 from bot.schedule_client import ScheduleClient
 
 logger = logging.getLogger(__name__)
@@ -58,6 +60,106 @@ class ScheduleService:
         self._cache: dict[str, dict[date, DaySchedule]] = {}
         self._cache_at: dict[str, datetime] = {}
         self._fetch_lock = asyncio.Lock()
+        self._today_locks: dict[int, asyncio.Lock] = {}
+
+    async def send_today(self, message: Message, schedule: DaySchedule, user) -> None:
+        await self._send_tracked_today(message.chat.id, schedule, user, message.answer)
+
+    async def _send_tracked_today(
+        self, chat_id: int, schedule: DaySchedule, user,
+        send: Callable[[str], Awaitable[Message | None]], prefix: str = "",
+    ) -> bool:
+        async with self._today_locks.setdefault(chat_id, asyncio.Lock()):
+            # Save the displayed snapshot: timer edits must only change formatting.
+            payload = json.dumps({
+                "prefix": prefix,
+                "show_shared_groups": bool(user["show_shared_groups"]),
+                "lessons": [
+                    {"starts_at": lesson.starts_at.isoformat(),
+                     "ends_at": lesson.ends_at.isoformat(),
+                     "subject": lesson.subject, "subgroup": lesson.subgroup,
+                     "room": lesson.room, "teacher": lesson.teacher,
+                     "groups": lesson.groups}
+                    for lesson in schedule.lessons
+                ],
+            }, ensure_ascii=False)
+            plain = prefix + format_schedule(schedule, "Сегодня", bool(user["show_shared_groups"]))
+            text = prefix + format_schedule(
+                schedule, "Сегодня", bool(user["show_shared_groups"]),
+                now=datetime.now(self.timezone),
+                highlight_current=bool(user["highlight_current"]),
+            )
+            sent = await send(text)
+            if sent is None:
+                return False
+            await self.db.save_today_message(
+                chat_id, sent.message_id, schedule.day, payload, plain, text
+            )
+            await self._refresh_today_messages(chat_id)
+            return True
+
+    async def refresh_today_messages(self, chat_id: int | None = None) -> None:
+        chats = [chat_id] if chat_id is not None else [
+            row["chat_id"] for row in await self.db.today_messages()
+        ]
+        for target in chats:
+            async with self._today_locks.setdefault(target, asyncio.Lock()):
+                try:
+                    await self._refresh_today_messages(target)
+                except Exception as error:
+                    await self.error_reporter.report(
+                        f"Обновление выделения расписания пользователя {target}", error
+                    )
+
+    async def _refresh_today_messages(self, chat_id: int) -> None:
+        if chat_id not in self.admin_ids and await self.db.access_mode() == "maintenance":
+            return
+        user = await self.db.get_user(chat_id)
+        if not user or not user["active"]:
+            return
+        now = datetime.now(self.timezone)
+        for record in await self.db.today_messages(chat_id):
+            day = date.fromisoformat(record["day"])
+            expired = not record["is_latest"] or day != now.date()
+            text = record["plain_text"]
+            if not expired and user["highlight_current"]:
+                payload = json.loads(record["payload"])
+                schedule = DaySchedule(day, tuple(
+                    Lesson(**{**item,
+                              "starts_at": time.fromisoformat(item["starts_at"]),
+                              "ends_at": time.fromisoformat(item["ends_at"]),
+                              "groups": tuple(item["groups"])})
+                    for item in payload["lessons"]
+                ))
+                text = payload.get("prefix", "") + format_schedule(
+                    schedule, "Сегодня", payload["show_shared_groups"], now=now
+                )
+            if text != record["last_text"]:
+                try:
+                    await self.bot.edit_message_text(
+                        text=text, chat_id=chat_id, message_id=record["message_id"]
+                    )
+                except TelegramBadRequest as error:
+                    if any(reason in str(error).lower() for reason in (
+                        "message to edit not found", "message can't be edited",
+                        "message_id_invalid",
+                    )):
+                        await self.db.forget_today_message(chat_id, record["message_id"])
+                        continue
+                    if not is_message_not_modified(error):
+                        await self.error_reporter.report("Редактирование расписания «Сегодня»", error)
+                        continue
+                except TelegramForbiddenError:
+                    await self.db.deactivate_user(chat_id)
+                    for stored in await self.db.today_messages(chat_id):
+                        await self.db.forget_today_message(chat_id, stored["message_id"])
+                    return
+                except (TelegramNetworkError, TelegramRetryAfter):
+                    # Retain both new and old messages so the next tick retries cleanup.
+                    continue
+                await self.db.update_today_message_text(chat_id, record["message_id"], text)
+            if expired:
+                await self.db.forget_today_message(chat_id, record["message_id"])
 
     async def schedules(
         self, group_name: str, force: bool = False, allow_stale: bool = False
@@ -234,10 +336,10 @@ class ScheduleService:
                 if now < delivery_at:
                     continue
                 if await self.db.claim_delivery(user["chat_id"], "morning", today):
-                    sent = await self.safe_send(
-                        user["chat_id"], "☀️ Доброе утро!\n\n" + format_schedule(
-                            schedule, "Сегодня", bool(user["show_shared_groups"])
-                        )
+                    sent = await self._send_tracked_today(
+                        user["chat_id"], schedule, user,
+                        lambda text: self._safe_send_message(user["chat_id"], text),
+                        prefix="☀️ Доброе утро!\n\n",
                     )
                     if not sent:
                         await self.db.release_delivery(user["chat_id"], "morning", today)
@@ -378,33 +480,34 @@ class ScheduleService:
             )
 
     async def safe_send(self, chat_id: int, text: str) -> bool:
+        return await self._safe_send_message(chat_id, text) is not None
+
+    async def _safe_send_message(self, chat_id: int, text: str) -> Message | None:
         if chat_id not in self.admin_ids and await self.db.access_mode() == "maintenance":
-            return False
+            return None
         try:
-            await self.bot.send_message(chat_id, text)
-            return True
+            return await self.bot.send_message(chat_id, text)
         except TelegramRetryAfter as error:
             await asyncio.sleep(error.retry_after)
             if chat_id not in self.admin_ids and await self.db.access_mode() == "maintenance":
-                return False
+                return None
             try:
-                await self.bot.send_message(chat_id, text)
-                return True
+                return await self.bot.send_message(chat_id, text)
             except Exception as retry_error:
                 await self.error_reporter.report(
                     f"Повторная отправка Telegram-сообщения пользователю {chat_id}", retry_error
                 )
-                return False
+                return None
         except TelegramForbiddenError:
             await self.db.deactivate_user(chat_id)
-            return False
+            return None
         except TelegramBadRequest as error:
             await self.error_reporter.report(
                 f"Telegram отклонил сообщение пользователю {chat_id}", error
             )
-            return False
+            return None
         except TelegramNetworkError as error:
             await self.error_reporter.report(
                 f"Сетевая ошибка отправки пользователю {chat_id}", error
             )
-            return False
+            return None

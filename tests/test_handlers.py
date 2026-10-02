@@ -17,6 +17,7 @@ from bot.handlers import (
 )
 from bot.keyboards import donation_keyboard, main_keyboard, settings_keyboard, week_keyboard
 from bot.models import DaySchedule, Lesson
+from bot.service import ScheduleService
 
 
 class NormalizeGroupTest(unittest.TestCase):
@@ -90,21 +91,24 @@ class HighlightFlowTest(unittest.IsolatedAsyncioTestCase):
                 Lesson(time(8), time(9, 30), "Математика", None),
                 Lesson(time(8), time(9, 30), "Другая подгруппа", 2),
             ))
-            service = SimpleNamespace(
-                timezone=now.tzinfo,
-                for_day=AsyncMock(return_value=schedule.for_subgroup(1)),
-                schedules=AsyncMock(return_value={now.date(): schedule}),
-            )
             reporter = SimpleNamespace(report=AsyncMock())
+            service = ScheduleService(SimpleNamespace(edit_message_text=AsyncMock()),
+                                      db, SimpleNamespace(), now.tzinfo, reporter)
+            service.for_day = AsyncMock(return_value=schedule.for_subgroup(1))
+            service.schedules = AsyncMock(return_value={now.date(): schedule})
             router = build_router(db, service, reporter, "https://example.com")
             handlers = {handler.callback.__name__: handler.callback
                         for handler in router.callback_query.handlers + router.message.handlers}
-            message = SimpleNamespace(chat=SimpleNamespace(id=42), answer=AsyncMock(),
+            message = SimpleNamespace(chat=SimpleNamespace(id=42),
+                                      answer=AsyncMock(side_effect=[
+                                          SimpleNamespace(message_id=i) for i in range(1, 30)
+                                      ]),
                                       edit_reply_markup=AsyncMock())
             callback = SimpleNamespace(message=message, answer=AsyncMock())
             try:
-                with patch("bot.handlers.datetime") as clock:
+                with patch("bot.handlers.datetime") as clock, patch("bot.service.datetime") as service_clock:
                     clock.now.return_value = now
+                    service_clock.now.return_value = now
                     await handlers["today"](message)
                     self.assertIn("<b>1. 08:00–09:30  Математика</b>",
                                   message.answer.call_args.args[0])

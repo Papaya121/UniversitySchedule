@@ -55,6 +55,16 @@ class Database:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY(group_name, day)
                 );
+                CREATE TABLE IF NOT EXISTS today_messages (
+                    chat_id INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    day TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    plain_text TEXT NOT NULL,
+                    last_text TEXT NOT NULL,
+                    is_latest INTEGER NOT NULL DEFAULT 1,
+                    PRIMARY KEY(chat_id, message_id)
+                );
                 CREATE TABLE IF NOT EXISTS schedule_guard_incidents (
                     group_name TEXT PRIMARY KEY,
                     active INTEGER NOT NULL DEFAULT 0,
@@ -409,6 +419,48 @@ class Database:
             ).fetchone()
             self._connection.commit()
             return bool(row and row["highlight_current"])
+
+    async def save_today_message(
+        self, chat_id: int, message_id: int, day: date, payload: str,
+        plain_text: str, last_text: str,
+    ) -> None:
+        async with self._lock:
+            self._connection.execute(
+                "UPDATE today_messages SET is_latest = 0 WHERE chat_id = ?", (chat_id,)
+            )
+            self._connection.execute("""
+                INSERT INTO today_messages(
+                    chat_id, message_id, day, payload, plain_text, last_text
+                ) VALUES (?, ?, ?, ?, ?, ?)
+            """, (chat_id, message_id, day.isoformat(), payload, plain_text, last_text))
+            self._connection.commit()
+
+    async def today_messages(self, chat_id: int | None = None) -> list[sqlite3.Row]:
+        async with self._lock:
+            if chat_id is None:
+                return list(self._connection.execute(
+                    "SELECT DISTINCT chat_id FROM today_messages"
+                ).fetchall())
+            return list(self._connection.execute(
+                "SELECT * FROM today_messages WHERE chat_id = ? ORDER BY message_id",
+                (chat_id,),
+            ).fetchall())
+
+    async def update_today_message_text(self, chat_id: int, message_id: int, text: str) -> None:
+        async with self._lock:
+            self._connection.execute(
+                "UPDATE today_messages SET last_text = ? WHERE chat_id = ? AND message_id = ?",
+                (text, chat_id, message_id),
+            )
+            self._connection.commit()
+
+    async def forget_today_message(self, chat_id: int, message_id: int) -> None:
+        async with self._lock:
+            self._connection.execute(
+                "DELETE FROM today_messages WHERE chat_id = ? AND message_id = ?",
+                (chat_id, message_id),
+            )
+            self._connection.commit()
 
     async def record_error(self, context: str, error: BaseException) -> None:
         async with self._lock:
