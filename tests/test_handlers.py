@@ -1,9 +1,10 @@
 import unittest
 import tempfile
-from datetime import date, time
+from datetime import date, datetime, time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo
 
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
@@ -59,6 +60,13 @@ class WeekSelectionTest(unittest.TestCase):
 
 
 class SettingsKeyboardTest(unittest.TestCase):
+    def test_highlight_toggle_default_and_disabled(self) -> None:
+        for enabled in (True, False):
+            keyboard = settings_keyboard(True, False, True, True, enabled)
+            button = next(button for row in keyboard.inline_keyboard for button in row
+                          if button.callback_data == "settings:highlight:toggle")
+            self.assertIn("Включено" if enabled else "Выключено", button.text)
+
     def test_lesson_start_toggle_is_in_settings(self) -> None:
         keyboard = settings_keyboard(True, False, True, True)
         buttons = [button for row in keyboard.inline_keyboard for button in row]
@@ -69,6 +77,53 @@ class SettingsKeyboardTest(unittest.TestCase):
         groups = next(button for button in buttons if button.callback_data == "settings:groups:toggle")
         self.assertIn("Включено", groups.text)
         self.assertFalse(any(button.callback_data.startswith("subgroup:") for button in buttons))
+
+
+class HighlightFlowTest(unittest.IsolatedAsyncioTestCase):
+    async def test_daily_weekly_and_settings_use_saved_preference(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            await db.initialize()
+            await db.upsert_user(42, "ИС2-261-ОБ", 1, "Иван", "ivan")
+            now = datetime(2026, 10, 2, 8, tzinfo=ZoneInfo("Europe/Moscow"))
+            schedule = DaySchedule(now.date(), (
+                Lesson(time(8), time(9, 30), "Математика", None),
+                Lesson(time(8), time(9, 30), "Другая подгруппа", 2),
+            ))
+            service = SimpleNamespace(
+                timezone=now.tzinfo,
+                for_day=AsyncMock(return_value=schedule.for_subgroup(1)),
+                schedules=AsyncMock(return_value={now.date(): schedule}),
+            )
+            reporter = SimpleNamespace(report=AsyncMock())
+            router = build_router(db, service, reporter, "https://example.com")
+            handlers = {handler.callback.__name__: handler.callback
+                        for handler in router.callback_query.handlers + router.message.handlers}
+            message = SimpleNamespace(chat=SimpleNamespace(id=42), answer=AsyncMock(),
+                                      edit_reply_markup=AsyncMock())
+            callback = SimpleNamespace(message=message, answer=AsyncMock())
+            try:
+                with patch("bot.handlers.datetime") as clock:
+                    clock.now.return_value = now
+                    await handlers["today"](message)
+                    self.assertIn("<b>1. 08:00–09:30  Математика</b>",
+                                  message.answer.call_args.args[0])
+                    await handlers["week"](message)
+                    texts = [call.args[0] for call in message.answer.call_args_list]
+                    self.assertTrue(any(text.startswith("<b>Расписание\n") for text in texts))
+                    self.assertFalse(any("Другая подгруппа" in text for text in texts))
+                    await handlers["toggle_highlight"](callback)
+                    self.assertEqual((await db.get_user(42))["highlight_current"], 0)
+                    message.answer.reset_mock()
+                    await handlers["today"](message)
+                    self.assertNotIn("<b>1. 08:00–09:30  Математика</b>",
+                                     message.answer.call_args.args[0])
+                    await handlers["week"](message)
+                    self.assertFalse(any(call.args[0].startswith("<b>Расписание\n")
+                                         for call in message.answer.call_args_list))
+                reporter.report.assert_not_awaited()
+            finally:
+                await db.close()
 
 
 class ChangeGroupFlowTest(unittest.IsolatedAsyncioTestCase):

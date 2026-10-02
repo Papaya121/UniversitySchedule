@@ -131,6 +131,7 @@ def build_router(
             bool(user["lesson_start_notifications"]),
             bool(user["daily_schedule_notifications"]),
             bool(user["show_shared_groups"]),
+            bool(user["highlight_current"]),
         )
 
     async def accept_group(message: Message, state: FSMContext, raw_group: str) -> None:
@@ -294,7 +295,9 @@ def build_router(
         try:
             schedule = await service.for_day(user["group_name"], day, user["subgroup"])
             await message.answer(format_schedule(
-                schedule, title, bool(user["show_shared_groups"])
+                schedule, title, bool(user["show_shared_groups"]),
+                now=datetime.now(service.timezone),
+                highlight_current=bool(user["highlight_current"]),
             ))
         except Exception as error:
             await reporter.report("Показ расписания на день", error)
@@ -335,6 +338,7 @@ def build_router(
     async def send_week(
         message: Message, schedules: dict[date, DaySchedule], start: date, user
     ) -> None:
+        now = datetime.now(service.timezone)
         await message.answer(
             f"🗓 <b>{week_label(start)} · {html.escape(user['group_name'])}</b>"
         )
@@ -342,14 +346,17 @@ def build_router(
             day = start + timedelta(days=offset)
             schedule = schedules.get(day)
             if schedule is None:
-                await message.answer(
-                    f"<b>{human_date(day)}</b>\nРасписание ещё не опубликовано."
-                )
+                text = f"<b>{human_date(day)}</b>\nРасписание ещё не опубликовано."
+                if user["highlight_current"] and day == now.date():
+                    text = f"<b>{human_date(day)}\nРасписание ещё не опубликовано.</b>"
+                await message.answer(text)
             else:
                 await message.answer(
                     format_schedule(
                         schedule.for_subgroup(user["subgroup"]),
                         show_shared_groups=bool(user["show_shared_groups"]),
+                        now=now, highlight_current=bool(user["highlight_current"]),
+                        weekly=True,
                     )
                 )
 
@@ -386,7 +393,7 @@ def build_router(
         await message.answer(
             f"Группа: <b>{html.escape(user['group_name'])}</b>\n"
             f"Подгруппа: <b>{user['subgroup']}</b>\n\n"
-            "Здесь можно изменить профиль и уведомления:",
+            "Здесь можно изменить профиль, отображение расписания и уведомления:",
             reply_markup=user_settings_keyboard(user),
         )
 
@@ -444,6 +451,20 @@ def build_router(
         await callback.answer(
             "Группы на общих парах показываются" if enabled
             else "Группы на общих парах скрыты"
+        )
+        await callback.message.edit_reply_markup(
+            reply_markup=user_settings_keyboard(await db.get_user(callback.message.chat.id))
+        )
+
+    @router.callback_query(F.data == "settings:highlight:toggle")
+    async def toggle_highlight(callback: CallbackQuery) -> None:
+        user = await db.get_user(callback.message.chat.id)
+        if not user:
+            await callback.answer("Сначала создай профиль через /start", show_alert=True)
+            return
+        enabled = await db.toggle_highlight_current(callback.message.chat.id)
+        await callback.answer(
+            "Выделение включено ✅" if enabled else "Выделение выключено ❌"
         )
         await callback.message.edit_reply_markup(
             reply_markup=user_settings_keyboard(await db.get_user(callback.message.chat.id))
