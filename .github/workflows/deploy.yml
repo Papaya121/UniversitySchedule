@@ -38,8 +38,8 @@ jobs:
 
       - name: Create test environment
         run: |
-          python3 -m venv .ci-venv
-          .ci-venv/bin/python -m pip install --disable-pip-version-check -r requirements.txt
+          /home/github-runner/.local/bin/uv venv --python 3.12 .ci-venv
+          /home/github-runner/.local/bin/uv pip install --python .ci-venv/bin/python -r requirements.txt
 
       - name: Run tests
         run: .ci-venv/bin/python -m unittest discover -s tests -v
