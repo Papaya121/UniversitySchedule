@@ -20,7 +20,7 @@ jobs:
       - self-hosted
       - Linux
       - X64
-      - university-schedule
+      - home-server
     timeout-minutes: 15
 
     steps:
