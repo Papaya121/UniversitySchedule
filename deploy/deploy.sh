@@ -52,12 +52,16 @@ if [[ "$(realpath "${SOURCE_DIR}")" != "$(realpath "${APP_DIR}")" ]]; then
     "${SOURCE_DIR}/" "${APP_DIR}/"
 fi
 
-if [[ ! -x "${APP_DIR}/.venv/bin/python" ]]; then
-  python3 -m venv "${APP_DIR}/.venv"
+UV=/home/papaya/.local/bin/uv
+
+if [[ ! -x "${APP_DIR}/.venv/bin/python" ]] || \
+   [[ "$("${APP_DIR}/.venv/bin/python" -c 'import sys; print(sys.version_info[:2] == (3, 12))')" != "True" ]]; then
+  rm -rf "${APP_DIR}/.venv"
+  "$UV" venv --python 3.12 "${APP_DIR}/.venv"
 fi
 
-"${APP_DIR}/.venv/bin/python" -m pip install \
-  --disable-pip-version-check \
+"$UV" pip install \
+  --python "${APP_DIR}/.venv/bin/python" \
   -r "${APP_DIR}/requirements.txt"
 
 mkdir -p "${SERVICE_DIR}"
